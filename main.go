@@ -6,6 +6,8 @@ import (
 	"os"
 	"strings"
 
+	"github.com/jaksi/sshutils"
+	"golang.org/x/crypto/ssh"
 	"golang.org/x/term"
 )
 
@@ -22,7 +24,8 @@ var (
 )
 
 var (
-	terminal *term.Terminal
+	terminal    *term.Terminal
+	connections []*sshutils.Conn
 )
 
 var commands = []command{
@@ -35,6 +38,29 @@ var commands = []command{
 				return usage
 			}
 			return exit
+		},
+	},
+	{
+		aliases:     []string{"connect"},
+		description: "connect to a server",
+		usage:       "<address> <user> <password>",
+		action: func(args []string) error {
+			if len(args) != 3 {
+				return usage
+			}
+			address := args[0]
+			user := args[1]
+			password := args[2]
+			conn, err := sshutils.Dial(address, &ssh.ClientConfig{
+				User:            user,
+				Auth:            []ssh.AuthMethod{ssh.Password(password)},
+				HostKeyCallback: ssh.InsecureIgnoreHostKey(),
+			})
+			if err != nil {
+				return err
+			}
+			connections = append(connections, conn)
+			return nil
 		},
 	},
 }
