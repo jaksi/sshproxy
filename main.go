@@ -100,6 +100,22 @@ var commands = []command{
 			return nil
 		},
 	},
+	{
+		aliases:     []string{"ls"},
+		description: "list active connections",
+		usage:       "",
+		action: func(args []string) error {
+			if len(args) != 0 {
+				return usage
+			}
+			mutex.Lock()
+			for _, conn := range connections {
+				fmt.Fprintf(terminal, "%v\n", conn)
+			}
+			mutex.Unlock()
+			return nil
+		},
+	},
 }
 
 func init() {
