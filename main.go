@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync"
 
 	"github.com/jaksi/sshutils"
 	"golang.org/x/crypto/ssh"
@@ -26,6 +27,7 @@ var (
 var (
 	terminal    *term.Terminal
 	connections []*sshutils.Conn
+	mutex       = &sync.Mutex{}
 )
 
 var commands = []command{
@@ -59,7 +61,42 @@ var commands = []command{
 			if err != nil {
 				return err
 			}
+			mutex.Lock()
 			connections = append(connections, conn)
+			mutex.Unlock()
+			go func() {
+				defer func() {
+					mutex.Lock()
+					for i, c := range connections {
+						if c == conn {
+							connections = append(connections[:i], connections[i+1:]...)
+							break
+						}
+					}
+					mutex.Unlock()
+					conn.Close()
+				}()
+				for {
+					select {
+					case request, ok := <-conn.Requests:
+						if !ok {
+							return
+						}
+						fmt.Fprintf(terminal, "%v: global request: %v\n", conn, request.Type)
+						if err := request.Reply(false, nil); err != nil {
+							fmt.Fprintf(terminal, "error replying to request: %v\n", err)
+						}
+					case newChannel, ok := <-conn.NewChannels:
+						if !ok {
+							return
+						}
+						fmt.Fprintf(terminal, "%v: new channel: %v\n", conn, newChannel)
+						if err := newChannel.Reject(ssh.Prohibited, "no channels allowed"); err != nil {
+							fmt.Fprintf(terminal, "error rejecting channel: %v\n", err)
+						}
+					}
+				}
+			}()
 			return nil
 		},
 	},
@@ -127,7 +164,7 @@ func main() {
 			}
 		}
 		if cmd == nil {
-			fmt.Fprintf(terminal, "Unknown command: %s\n", args[0])
+			fmt.Fprintf(terminal, "unknown command: %s\n", args[0])
 			continue
 		}
 		if err := cmd.action(args[1:]); err != nil {
@@ -138,7 +175,7 @@ func main() {
 				fmt.Fprintf(terminal, "Usage: %s %s\n", args[0], cmd.usage)
 				continue
 			}
-			fmt.Fprintf(terminal, "Error: %s\n", err)
+			fmt.Fprintf(terminal, "error: %s\n", err)
 		}
 	}
 }
