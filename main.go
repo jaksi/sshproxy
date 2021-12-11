@@ -44,6 +44,7 @@ func (s side) String() string {
 
 type conn struct {
 	*sshutils.Conn
+	id   int
 	side side
 }
 
@@ -51,6 +52,7 @@ var (
 	terminal    *term.Terminal
 	connections []conn
 	mutex       = &sync.Mutex{}
+	maxId       int
 )
 
 func handleConn(connection conn) {
@@ -71,7 +73,7 @@ func handleConn(connection conn) {
 			if !ok {
 				return
 			}
-			fmt.Fprintf(terminal, "%v: global request: %v\n", connection, request.Type)
+			fmt.Fprintf(terminal, "%v: global request: %v\n", connection.id, request.Type)
 			if err := request.Reply(false, nil); err != nil {
 				fmt.Fprintf(terminal, "%v: error replying to global request: %v\n", connection, err)
 			}
@@ -79,7 +81,7 @@ func handleConn(connection conn) {
 			if !ok {
 				return
 			}
-			fmt.Fprintf(terminal, "%v: new channel: %v\n", connection, newChannel)
+			fmt.Fprintf(terminal, "%v: new channel: %v\n", connection.id, newChannel)
 			if err := newChannel.Reject(ssh.Prohibited, "no channels allowed"); err != nil {
 				fmt.Fprintf(terminal, "error rejecting channel: %v\n", err)
 			}
@@ -118,11 +120,12 @@ var commands = []command{
 			if err != nil {
 				return err
 			}
-			connection := conn{c, client}
 			mutex.Lock()
+			connection := conn{c, maxId, client}
+			maxId++
 			connections = append(connections, connection)
 			mutex.Unlock()
-			fmt.Fprintf(terminal, "connected: %v\n", c)
+			fmt.Fprintf(terminal, "connected: %v\n", connection.id)
 			go handleConn(connection)
 			return nil
 		},
@@ -150,11 +153,12 @@ var commands = []command{
 			if err != nil {
 				return err
 			}
-			connection := conn{c, client}
 			mutex.Lock()
+			connection := conn{c, maxId, client}
+			maxId++
 			connections = append(connections, connection)
 			mutex.Unlock()
-			fmt.Fprintf(terminal, "connected: %v\n", c)
+			fmt.Fprintf(terminal, "connected: %v\n", connection.id)
 			go handleConn(connection)
 			return nil
 		},
@@ -169,7 +173,7 @@ var commands = []command{
 			}
 			mutex.Lock()
 			for _, connection := range connections {
-				fmt.Fprintf(terminal, "%v\n", connection)
+				fmt.Fprintf(terminal, "%v: %v, %v\n", connection.id, connection.side, connection.RemoteAddr())
 			}
 			mutex.Unlock()
 			return nil
