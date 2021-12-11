@@ -44,8 +44,9 @@ func (s side) String() string {
 
 type conn struct {
 	*sshutils.Conn
-	id   int
-	side side
+	id       int
+	side     side
+	channels []*sshutils.Channel
 }
 
 var (
@@ -55,7 +56,7 @@ var (
 	maxId       int
 )
 
-func handleRequest(connection conn, request *ssh.Request) error {
+func handleGlobalRequest(connection conn, request *ssh.Request) error {
 	mutex.Lock()
 	defer mutex.Unlock()
 	fmt.Fprintf(terminal, "%v: global request: %v\n", connection.id, request.Type)
@@ -70,6 +71,66 @@ func handleRequest(connection conn, request *ssh.Request) error {
 	if err := request.Reply(true, nil); err != nil {
 		return err
 	}
+	return nil
+}
+
+func handleChannelRequest(connection conn, channel *sshutils.Channel, request *ssh.Request) error {
+	mutex.Lock()
+	defer mutex.Unlock()
+	fmt.Fprintf(terminal, "%v: %v: channel request: %v\n", connection.id, channel, request.Type)
+	payload, err := sshutils.UnmarshalChannelRequestPayload(request)
+	if err != nil {
+		if err := request.Reply(false, nil); err != nil {
+			return err
+		}
+		return err
+	}
+	fmt.Fprintf(terminal, "payload: %v\n", payload)
+	if err := request.Reply(true, nil); err != nil {
+		return err
+	}
+	return nil
+}
+
+func handleChannel(connection conn, channel *sshutils.Channel) {
+	defer func() {
+		mutex.Lock()
+		for i, c := range connection.channels {
+			if c == channel {
+				connection.channels = append(connection.channels[:i], connection.channels[i+1:]...)
+				break
+			}
+		}
+		mutex.Unlock()
+		_ = channel.CloseWrite()
+		channel.Close()
+	}()
+	for request := range channel.Requests {
+		if err := handleChannelRequest(connection, channel, request); err != nil {
+			fmt.Fprintf(terminal, "error handling request: %v\n", err)
+		}
+	}
+}
+
+func handleNewChannel(connection conn, newChannel *sshutils.NewChannel) error {
+	mutex.Lock()
+	defer mutex.Unlock()
+	fmt.Fprintf(terminal, "%v: new channel: %v\n", connection.id, newChannel)
+	payload, err := newChannel.Payload()
+	if err != nil {
+		if err := newChannel.Reject(ssh.UnknownChannelType, "unknown channel type"); err != nil {
+			return err
+		}
+		return err
+	}
+	fmt.Fprintf(terminal, "payload: %v\n", payload)
+	channel, err := newChannel.AcceptChannel()
+	if err != nil {
+		return err
+	}
+	connection.channels = append(connection.channels, channel)
+	fmt.Fprintf(terminal, "accepted: %v\n", channel)
+	go handleChannel(connection, channel)
 	return nil
 }
 
@@ -91,16 +152,15 @@ func handleConn(connection conn) {
 			if !ok {
 				return
 			}
-			if err := handleRequest(connection, request); err != nil {
-				fmt.Fprintf(terminal, "%v: error handling request: %v\n", connection.id, err)
+			if err := handleGlobalRequest(connection, request); err != nil {
+				fmt.Fprintf(terminal, "error handling request: %v\n", err)
 			}
 		case newChannel, ok := <-connection.NewChannels:
 			if !ok {
 				return
 			}
-			fmt.Fprintf(terminal, "%v: new channel: %v\n", connection.id, newChannel)
-			if err := newChannel.Reject(ssh.Prohibited, "no channels allowed"); err != nil {
-				fmt.Fprintf(terminal, "error rejecting channel: %v\n", err)
+			if err := handleNewChannel(connection, newChannel); err != nil {
+				fmt.Fprintf(terminal, "error handling new channel: %v\n", err)
 			}
 		}
 	}
@@ -138,7 +198,7 @@ var commands = []command{
 				return err
 			}
 			mutex.Lock()
-			connection := conn{c, maxId, client}
+			connection := conn{c, maxId, client, []*sshutils.Channel{}}
 			maxId++
 			connections = append(connections, connection)
 			mutex.Unlock()
@@ -171,7 +231,7 @@ var commands = []command{
 				return err
 			}
 			mutex.Lock()
-			connection := conn{c, maxId, client}
+			connection := conn{c, maxId, client, []*sshutils.Channel{}}
 			maxId++
 			connections = append(connections, connection)
 			mutex.Unlock()
@@ -191,6 +251,9 @@ var commands = []command{
 			mutex.Lock()
 			for _, connection := range connections {
 				fmt.Fprintf(terminal, "%v: %v, %v\n", connection.id, connection.side, connection.RemoteAddr())
+				for _, channel := range connection.channels {
+					fmt.Fprintf(terminal, "  %v: %v\n", channel, channel.ChannelType())
+				}
 			}
 			mutex.Unlock()
 			return nil
@@ -208,7 +271,7 @@ func init() {
 				return usage
 			}
 			for _, cmd := range commands {
-				fmt.Fprintf(terminal, "%s\n%s\nUsage: %s %s\n\n", strings.Join(cmd.aliases, "|"), cmd.description, cmd.aliases[0], cmd.usage)
+				fmt.Fprintf(terminal, "%s\n%s\nusage: %s %s\n\n", strings.Join(cmd.aliases, "|"), cmd.description, cmd.aliases[0], cmd.usage)
 			}
 			return nil
 		},
@@ -268,7 +331,7 @@ func main() {
 				break
 			}
 			if err == usage {
-				fmt.Fprintf(terminal, "Usage: %s %s\n", args[0], cmd.usage)
+				fmt.Fprintf(terminal, "usage: %s %s\n", args[0], cmd.usage)
 				continue
 			}
 			fmt.Fprintf(terminal, "error: %s\n", err)
