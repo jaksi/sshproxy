@@ -30,6 +30,40 @@ var (
 	mutex       = &sync.Mutex{}
 )
 
+func handleConn(conn *sshutils.Conn) {
+	defer func() {
+		mutex.Lock()
+		for i, c := range connections {
+			if c == conn {
+				connections = append(connections[:i], connections[i+1:]...)
+				break
+			}
+		}
+		mutex.Unlock()
+		conn.Close()
+	}()
+	for {
+		select {
+		case request, ok := <-conn.Requests:
+			if !ok {
+				return
+			}
+			fmt.Fprintf(terminal, "%v: global request: %v\n", conn, request.Type)
+			if err := request.Reply(false, nil); err != nil {
+				fmt.Fprintf(terminal, "%v: error replying to global request: %v\n", conn, err)
+			}
+		case newChannel, ok := <-conn.NewChannels:
+			if !ok {
+				return
+			}
+			fmt.Fprintf(terminal, "%v: new channel: %v\n", conn, newChannel)
+			if err := newChannel.Reject(ssh.Prohibited, "no channels allowed"); err != nil {
+				fmt.Fprintf(terminal, "error rejecting channel: %v\n", err)
+			}
+		}
+	}
+}
+
 var commands = []command{
 	{
 		aliases:     []string{"exit", "quit"},
@@ -44,7 +78,7 @@ var commands = []command{
 	},
 	{
 		aliases:     []string{"connect"},
-		description: "connect to a server",
+		description: "connect to a server using a password",
 		usage:       "<address> <user> <password>",
 		action: func(args []string) error {
 			if len(args) != 3 {
@@ -64,39 +98,39 @@ var commands = []command{
 			mutex.Lock()
 			connections = append(connections, conn)
 			mutex.Unlock()
-			go func() {
-				defer func() {
-					mutex.Lock()
-					for i, c := range connections {
-						if c == conn {
-							connections = append(connections[:i], connections[i+1:]...)
-							break
-						}
-					}
-					mutex.Unlock()
-					conn.Close()
-				}()
-				for {
-					select {
-					case request, ok := <-conn.Requests:
-						if !ok {
-							return
-						}
-						fmt.Fprintf(terminal, "%v: global request: %v\n", conn, request.Type)
-						if err := request.Reply(false, nil); err != nil {
-							fmt.Fprintf(terminal, "error replying to request: %v\n", err)
-						}
-					case newChannel, ok := <-conn.NewChannels:
-						if !ok {
-							return
-						}
-						fmt.Fprintf(terminal, "%v: new channel: %v\n", conn, newChannel)
-						if err := newChannel.Reject(ssh.Prohibited, "no channels allowed"); err != nil {
-							fmt.Fprintf(terminal, "error rejecting channel: %v\n", err)
-						}
-					}
-				}
-			}()
+			fmt.Fprintf(terminal, "connected: %v\n", conn)
+			go handleConn(conn)
+			return nil
+		},
+	},
+	{
+		aliases:     []string{"connect-key"},
+		description: "connect to a server using a private key",
+		usage:       "<address> <user> <private key>",
+		action: func(args []string) error {
+			if len(args) != 3 {
+				return usage
+			}
+			address := args[0]
+			user := args[1]
+			keyFile := args[2]
+			key, err := sshutils.LoadHostKey(keyFile)
+			if err != nil {
+				return err
+			}
+			conn, err := sshutils.Dial(address, &ssh.ClientConfig{
+				User:            user,
+				Auth:            []ssh.AuthMethod{ssh.PublicKeys(key)},
+				HostKeyCallback: ssh.InsecureIgnoreHostKey(),
+			})
+			if err != nil {
+				return err
+			}
+			mutex.Lock()
+			connections = append(connections, conn)
+			mutex.Unlock()
+			fmt.Fprintf(terminal, "connected: %v\n", conn)
+			go handleConn(conn)
 			return nil
 		},
 	},
