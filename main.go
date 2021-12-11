@@ -55,6 +55,24 @@ var (
 	maxId       int
 )
 
+func handleRequest(connection conn, request *ssh.Request) error {
+	mutex.Lock()
+	defer mutex.Unlock()
+	fmt.Fprintf(terminal, "%v: global request: %v\n", connection.id, request.Type)
+	payload, err := sshutils.UnmarshalGlobalRequestPayload(request)
+	if err != nil {
+		if err := request.Reply(false, nil); err != nil {
+			return err
+		}
+		return err
+	}
+	fmt.Fprintf(terminal, "payload: %v\n", payload)
+	if err := request.Reply(true, nil); err != nil {
+		return err
+	}
+	return nil
+}
+
 func handleConn(connection conn) {
 	defer func() {
 		mutex.Lock()
@@ -73,9 +91,8 @@ func handleConn(connection conn) {
 			if !ok {
 				return
 			}
-			fmt.Fprintf(terminal, "%v: global request: %v\n", connection.id, request.Type)
-			if err := request.Reply(false, nil); err != nil {
-				fmt.Fprintf(terminal, "%v: error replying to global request: %v\n", connection, err)
+			if err := handleRequest(connection, request); err != nil {
+				fmt.Fprintf(terminal, "%v: error handling request: %v\n", connection.id, err)
 			}
 		case newChannel, ok := <-connection.NewChannels:
 			if !ok {
