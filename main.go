@@ -5,7 +5,10 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync"
 
+	"github.com/jaksi/sshutils"
+	"golang.org/x/crypto/ssh"
 	"golang.org/x/term"
 )
 
@@ -22,7 +25,9 @@ var (
 )
 
 var (
-	terminal *term.Terminal
+	terminal    *term.Terminal
+	connections []*sshutils.Conn
+	mutex       = &sync.Mutex{}
 )
 
 var commands = []command{
@@ -35,6 +40,80 @@ var commands = []command{
 				return usage
 			}
 			return exit
+		},
+	},
+	{
+		aliases:     []string{"connect"},
+		description: "connect to a server",
+		usage:       "<address> <user> <password>",
+		action: func(args []string) error {
+			if len(args) != 3 {
+				return usage
+			}
+			address := args[0]
+			user := args[1]
+			password := args[2]
+			conn, err := sshutils.Dial(address, &ssh.ClientConfig{
+				User:            user,
+				Auth:            []ssh.AuthMethod{ssh.Password(password)},
+				HostKeyCallback: ssh.InsecureIgnoreHostKey(),
+			})
+			if err != nil {
+				return err
+			}
+			mutex.Lock()
+			connections = append(connections, conn)
+			mutex.Unlock()
+			go func() {
+				defer func() {
+					mutex.Lock()
+					for i, c := range connections {
+						if c == conn {
+							connections = append(connections[:i], connections[i+1:]...)
+							break
+						}
+					}
+					mutex.Unlock()
+					conn.Close()
+				}()
+				for {
+					select {
+					case request, ok := <-conn.Requests:
+						if !ok {
+							return
+						}
+						fmt.Fprintf(terminal, "%v: global request: %v\n", conn, request.Type)
+						if err := request.Reply(false, nil); err != nil {
+							fmt.Fprintf(terminal, "error replying to request: %v\n", err)
+						}
+					case newChannel, ok := <-conn.NewChannels:
+						if !ok {
+							return
+						}
+						fmt.Fprintf(terminal, "%v: new channel: %v\n", conn, newChannel)
+						if err := newChannel.Reject(ssh.Prohibited, "no channels allowed"); err != nil {
+							fmt.Fprintf(terminal, "error rejecting channel: %v\n", err)
+						}
+					}
+				}
+			}()
+			return nil
+		},
+	},
+	{
+		aliases:     []string{"ls"},
+		description: "list active connections",
+		usage:       "",
+		action: func(args []string) error {
+			if len(args) != 0 {
+				return usage
+			}
+			mutex.Lock()
+			for _, conn := range connections {
+				fmt.Fprintf(terminal, "%v\n", conn)
+			}
+			mutex.Unlock()
+			return nil
 		},
 	},
 }
@@ -101,7 +180,7 @@ func main() {
 			}
 		}
 		if cmd == nil {
-			fmt.Fprintf(terminal, "Unknown command: %s\n", args[0])
+			fmt.Fprintf(terminal, "unknown command: %s\n", args[0])
 			continue
 		}
 		if err := cmd.action(args[1:]); err != nil {
@@ -112,7 +191,7 @@ func main() {
 				fmt.Fprintf(terminal, "Usage: %s %s\n", args[0], cmd.usage)
 				continue
 			}
-			fmt.Fprintf(terminal, "Error: %s\n", err)
+			fmt.Fprintf(terminal, "error: %s\n", err)
 		}
 	}
 }
