@@ -24,39 +24,62 @@ var (
 	usage = errors.New("usage")
 )
 
+type side int
+
+const (
+	client side = iota
+	server
+)
+
+func (s side) String() string {
+	switch s {
+	case client:
+		return "client"
+	case server:
+		return "server"
+	default:
+		return "unknown"
+	}
+}
+
+type conn struct {
+	*sshutils.Conn
+	side side
+}
+
 var (
 	terminal    *term.Terminal
-	connections []*sshutils.Conn
+	connections []conn
 	mutex       = &sync.Mutex{}
 )
 
-func handleConn(conn *sshutils.Conn) {
+func handleConn(connection conn) {
 	defer func() {
 		mutex.Lock()
 		for i, c := range connections {
-			if c == conn {
+			if c.Conn == connection.Conn {
 				connections = append(connections[:i], connections[i+1:]...)
 				break
 			}
 		}
 		mutex.Unlock()
-		conn.Close()
+		connection.Close()
 	}()
 	for {
 		select {
-		case request, ok := <-conn.Requests:
+		case request, ok := <-connection.Requests:
 			if !ok {
 				return
 			}
-			fmt.Fprintf(terminal, "%v: global request: %v\n", conn, request.Type)
+			fmt.Fprintf(terminal, "%v: global request: %v\n", connection, request.Type)
 			if err := request.Reply(false, nil); err != nil {
-				fmt.Fprintf(terminal, "%v: error replying to global request: %v\n", conn, err)
+				fmt.Fprintf(terminal, "%v: error replying to global request: %v\n", connection, err)
 			}
-		case newChannel, ok := <-conn.NewChannels:
+		case newChannel, ok := <-connection.NewChannels:
 			if !ok {
 				return
 			}
-			fmt.Fprintf(terminal, "%v: new channel: %v\n", conn, newChannel)
+			fmt.Fprintf(terminal, "%v: new channel: %v\n", connection, newChannel)
 			if err := newChannel.Reject(ssh.Prohibited, "no channels allowed"); err != nil {
 				fmt.Fprintf(terminal, "error rejecting channel: %v\n", err)
 			}
@@ -87,7 +110,7 @@ var commands = []command{
 			address := args[0]
 			user := args[1]
 			password := args[2]
-			conn, err := sshutils.Dial(address, &ssh.ClientConfig{
+			c, err := sshutils.Dial(address, &ssh.ClientConfig{
 				User:            user,
 				Auth:            []ssh.AuthMethod{ssh.Password(password)},
 				HostKeyCallback: ssh.InsecureIgnoreHostKey(),
@@ -95,11 +118,12 @@ var commands = []command{
 			if err != nil {
 				return err
 			}
+			connection := conn{c, client}
 			mutex.Lock()
-			connections = append(connections, conn)
+			connections = append(connections, connection)
 			mutex.Unlock()
-			fmt.Fprintf(terminal, "connected: %v\n", conn)
-			go handleConn(conn)
+			fmt.Fprintf(terminal, "connected: %v\n", c)
+			go handleConn(connection)
 			return nil
 		},
 	},
@@ -118,7 +142,7 @@ var commands = []command{
 			if err != nil {
 				return err
 			}
-			conn, err := sshutils.Dial(address, &ssh.ClientConfig{
+			c, err := sshutils.Dial(address, &ssh.ClientConfig{
 				User:            user,
 				Auth:            []ssh.AuthMethod{ssh.PublicKeys(key)},
 				HostKeyCallback: ssh.InsecureIgnoreHostKey(),
@@ -126,11 +150,12 @@ var commands = []command{
 			if err != nil {
 				return err
 			}
+			connection := conn{c, client}
 			mutex.Lock()
-			connections = append(connections, conn)
+			connections = append(connections, connection)
 			mutex.Unlock()
-			fmt.Fprintf(terminal, "connected: %v\n", conn)
-			go handleConn(conn)
+			fmt.Fprintf(terminal, "connected: %v\n", c)
+			go handleConn(connection)
 			return nil
 		},
 	},
@@ -143,8 +168,8 @@ var commands = []command{
 				return usage
 			}
 			mutex.Lock()
-			for _, conn := range connections {
-				fmt.Fprintf(terminal, "%v\n", conn)
+			for _, connection := range connections {
+				fmt.Fprintf(terminal, "%v\n", connection)
 			}
 			mutex.Unlock()
 			return nil
