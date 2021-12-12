@@ -105,9 +105,32 @@ func handleChannel(connection conn, channel *sshutils.Channel) {
 		_ = channel.CloseWrite()
 		channel.Close()
 	}()
-	for request := range channel.Requests {
-		if err := handleChannelRequest(connection, channel, request); err != nil {
-			fmt.Fprintf(terminal, "error handling request: %v\n", err)
+	pty := false
+	go func() {
+		for request := range channel.Requests {
+			if err := handleChannelRequest(connection, channel, request); err != nil {
+				fmt.Fprintf(terminal, "error handling request: %v\n", err)
+			}
+			if channel.ChannelType() == "session" && request.Type == "pty-req" {
+				pty = true
+			}
+		}
+	}()
+	buffer := make([]byte, 1024)
+	for {
+		n, err := channel.Read(buffer)
+		if err != nil {
+			fmt.Fprintf(terminal, "error reading channel: %v\n", err)
+			return
+		}
+		if n > 0 {
+			fmt.Fprintf(terminal, "%v: %v: channel data: %q\n", connection.id, channel, string(buffer[:n]))
+		}
+		if pty {
+			if _, err := channel.Write([]byte(strings.ReplaceAll(string(buffer[:n]), "\r", "\r\n"))); err != nil {
+				fmt.Fprintf(terminal, "error writing channel: %v\n", err)
+				return
+			}
 		}
 	}
 }
