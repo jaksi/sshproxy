@@ -51,12 +51,12 @@ type conn struct {
 
 var (
 	terminal    *term.Terminal
-	connections []conn
+	connections []*conn
 	mutex       = &sync.Mutex{}
 	maxId       int
 )
 
-func handleGlobalRequest(connection conn, request *ssh.Request) error {
+func handleGlobalRequest(connection *conn, request *ssh.Request) error {
 	mutex.Lock()
 	defer mutex.Unlock()
 	fmt.Fprintf(terminal, "%v: global request: %v\n", connection.id, request.Type)
@@ -74,7 +74,7 @@ func handleGlobalRequest(connection conn, request *ssh.Request) error {
 	return nil
 }
 
-func handleChannelRequest(connection conn, channel *sshutils.Channel, request *ssh.Request) error {
+func handleChannelRequest(connection *conn, channel *sshutils.Channel, request *ssh.Request) error {
 	mutex.Lock()
 	defer mutex.Unlock()
 	fmt.Fprintf(terminal, "%v: %v: channel request: %v\n", connection.id, channel, request.Type)
@@ -92,7 +92,7 @@ func handleChannelRequest(connection conn, channel *sshutils.Channel, request *s
 	return nil
 }
 
-func handleChannel(connection conn, channel *sshutils.Channel) {
+func handleChannel(connection *conn, channel *sshutils.Channel) {
 	defer func() {
 		mutex.Lock()
 		for i, c := range connection.channels {
@@ -135,7 +135,7 @@ func handleChannel(connection conn, channel *sshutils.Channel) {
 	}
 }
 
-func handleNewChannel(connection conn, newChannel *sshutils.NewChannel) error {
+func handleNewChannel(connection *conn, newChannel *sshutils.NewChannel) error {
 	mutex.Lock()
 	defer mutex.Unlock()
 	fmt.Fprintf(terminal, "%v: new channel: %v\n", connection.id, newChannel)
@@ -157,7 +157,7 @@ func handleNewChannel(connection conn, newChannel *sshutils.NewChannel) error {
 	return nil
 }
 
-func handleConn(connection conn) {
+func handleConn(connection *conn) {
 	defer func() {
 		mutex.Lock()
 		for i, c := range connections {
@@ -221,7 +221,7 @@ var commands = []command{
 				return err
 			}
 			mutex.Lock()
-			connection := conn{c, maxId, client, []*sshutils.Channel{}}
+			connection := &conn{c, maxId, client, []*sshutils.Channel{}}
 			maxId++
 			connections = append(connections, connection)
 			mutex.Unlock()
@@ -254,11 +254,58 @@ var commands = []command{
 				return err
 			}
 			mutex.Lock()
-			connection := conn{c, maxId, client, []*sshutils.Channel{}}
+			connection := &conn{c, maxId, client, []*sshutils.Channel{}}
 			maxId++
 			connections = append(connections, connection)
 			mutex.Unlock()
 			fmt.Fprintf(terminal, "connected: %v\n", connection.id)
+			go handleConn(connection)
+			return nil
+		},
+	},
+	{
+		aliases:     []string{"accept"},
+		description: "listen on the specified address and accept a single connection",
+		usage:       "<address> [<host_key_file>]",
+		action: func(args []string) error {
+			if len(args) < 1 || len(args) > 2 {
+				return usage
+			}
+			address := args[0]
+			var hostKey *sshutils.HostKey
+			var err error
+			if len(args) == 2 {
+				keyFile := args[1]
+				hostKey, err = sshutils.LoadHostKey(keyFile)
+			} else {
+				hostKey, err = sshutils.GenerateHostKey(sshutils.ECDSA)
+			}
+			if err != nil {
+				return err
+			}
+
+			config := &ssh.ServerConfig{
+				NoClientAuth: true,
+			}
+			config.AddHostKey(hostKey)
+
+			listener, err := sshutils.Listen(address, config)
+			if err != nil {
+				return err
+			}
+			defer listener.Close()
+
+			fmt.Fprintf(terminal, "listening on %v, host key: %v\n", listener.Addr(), hostKey)
+			c, err := listener.Accept()
+			if err != nil {
+				return err
+			}
+			mutex.Lock()
+			connection := &conn{c, maxId, client, []*sshutils.Channel{}}
+			maxId++
+			connections = append(connections, connection)
+			mutex.Unlock()
+			fmt.Fprintf(terminal, "accepted: %v: %v\n", connection.id, connection.Conn.RemoteAddr())
 			go handleConn(connection)
 			return nil
 		},
