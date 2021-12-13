@@ -51,12 +51,12 @@ type conn struct {
 
 var (
 	terminal    *term.Terminal
-	connections []conn
+	connections []*conn
 	mutex       = &sync.Mutex{}
 	maxId       int
 )
 
-func handleGlobalRequest(connection conn, request *ssh.Request) error {
+func handleGlobalRequest(connection *conn, request *ssh.Request) error {
 	mutex.Lock()
 	defer mutex.Unlock()
 	fmt.Fprintf(terminal, "%v: global request: %v\n", connection.id, request.Type)
@@ -74,7 +74,7 @@ func handleGlobalRequest(connection conn, request *ssh.Request) error {
 	return nil
 }
 
-func handleChannelRequest(connection conn, channel *sshutils.Channel, request *ssh.Request) error {
+func handleChannelRequest(connection *conn, channel *sshutils.Channel, request *ssh.Request) error {
 	mutex.Lock()
 	defer mutex.Unlock()
 	fmt.Fprintf(terminal, "%v: %v: channel request: %v\n", connection.id, channel, request.Type)
@@ -92,7 +92,7 @@ func handleChannelRequest(connection conn, channel *sshutils.Channel, request *s
 	return nil
 }
 
-func handleChannel(connection conn, channel *sshutils.Channel) {
+func handleChannel(connection *conn, channel *sshutils.Channel) {
 	defer func() {
 		mutex.Lock()
 		for i, c := range connection.channels {
@@ -135,7 +135,7 @@ func handleChannel(connection conn, channel *sshutils.Channel) {
 	}
 }
 
-func handleNewChannel(connection conn, newChannel *sshutils.NewChannel) error {
+func handleNewChannel(connection *conn, newChannel *sshutils.NewChannel) error {
 	mutex.Lock()
 	defer mutex.Unlock()
 	fmt.Fprintf(terminal, "%v: new channel: %v\n", connection.id, newChannel)
@@ -157,7 +157,7 @@ func handleNewChannel(connection conn, newChannel *sshutils.NewChannel) error {
 	return nil
 }
 
-func handleConn(connection conn) {
+func handleConn(connection *conn) {
 	defer func() {
 		mutex.Lock()
 		for i, c := range connections {
@@ -221,7 +221,7 @@ var commands = []command{
 				return err
 			}
 			mutex.Lock()
-			connection := conn{c, maxId, client, []*sshutils.Channel{}}
+			connection := &conn{c, maxId, client, []*sshutils.Channel{}}
 			maxId++
 			connections = append(connections, connection)
 			mutex.Unlock()
@@ -254,7 +254,7 @@ var commands = []command{
 				return err
 			}
 			mutex.Lock()
-			connection := conn{c, maxId, client, []*sshutils.Channel{}}
+			connection := &conn{c, maxId, client, []*sshutils.Channel{}}
 			maxId++
 			connections = append(connections, connection)
 			mutex.Unlock()
