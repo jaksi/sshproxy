@@ -264,6 +264,53 @@ var commands = []command{
 		},
 	},
 	{
+		aliases:     []string{"accept"},
+		description: "listen on the specified address and accept a single connection",
+		usage:       "<address> [<host_key_file>]",
+		action: func(args []string) error {
+			if len(args) < 1 || len(args) > 2 {
+				return usage
+			}
+			address := args[0]
+			var hostKey *sshutils.HostKey
+			var err error
+			if len(args) == 2 {
+				keyFile := args[1]
+				hostKey, err = sshutils.LoadHostKey(keyFile)
+			} else {
+				hostKey, err = sshutils.GenerateHostKey(sshutils.ECDSA)
+			}
+			if err != nil {
+				return err
+			}
+
+			config := &ssh.ServerConfig{
+				NoClientAuth: true,
+			}
+			config.AddHostKey(hostKey)
+
+			listener, err := sshutils.Listen(address, config)
+			if err != nil {
+				return err
+			}
+			defer listener.Close()
+
+			fmt.Fprintf(terminal, "listening on %v, host key: %v\n", listener.Addr(), hostKey)
+			c, err := listener.Accept()
+			if err != nil {
+				return err
+			}
+			mutex.Lock()
+			connection := &conn{c, maxId, client, []*sshutils.Channel{}}
+			maxId++
+			connections = append(connections, connection)
+			mutex.Unlock()
+			fmt.Fprintf(terminal, "accepted: %v: %v\n", connection.id, connection.Conn.RemoteAddr())
+			go handleConn(connection)
+			return nil
+		},
+	},
+	{
 		aliases:     []string{"ls"},
 		description: "list active connections",
 		usage:       "",
