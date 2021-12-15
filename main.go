@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -326,6 +327,34 @@ var commands = []command{
 				}
 			}
 			mutex.Unlock()
+			return nil
+		},
+	},
+	{
+		aliases:     []string{"write"},
+		description: "write data to a channel",
+		usage:       "<connection> <channel> <data ...>",
+		action: func(args []string) error {
+			if len(args) < 3 {
+				return usage
+			}
+			connectionId, err := strconv.Atoi(args[0])
+			if err != nil {
+				return err
+			}
+			channelId, err := strconv.Atoi(args[1])
+			if err != nil {
+				return err
+			}
+			data := strings.Join(args[2:], " ")
+			mutex.Lock()
+			defer mutex.Unlock()
+			connection := connections[connectionId]
+			channel := connection.channels[channelId]
+			_, err = channel.Write([]byte(data))
+			if err != nil {
+				return err
+			}
 			return nil
 		},
 	},
