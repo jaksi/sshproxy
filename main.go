@@ -68,7 +68,7 @@ func handleGlobalRequest(connection *conn, request *ssh.Request) error {
 	if err == nil {
 		payloadString = payload.String()
 		accepted = true
-		}
+	}
 	fmt.Fprintf(terminal, "< %v global_request type=%q want_reply=%v payload=%q\n", connection.id, request.Type, request.WantReply, payloadString)
 	fmt.Fprintf(terminal, " > accepted=%v response=%q\n", accepted, base64.RawStdEncoding.EncodeToString(response))
 	return request.Reply(accepted, response)
@@ -84,7 +84,7 @@ func handleChannelRequest(connection *conn, channel *sshutils.Channel, request *
 	if err == nil {
 		payloadString = payload.String()
 		accepted = true
-		}
+	}
 	fmt.Fprintf(terminal, "< %v:%v channel_request type=%q want_reply=%v payload=%q\n", connection.id, channel.ChannelID(), request.Type, request.WantReply, payloadString)
 	fmt.Fprintf(terminal, " > accepted=%v response=%q\n", accepted, base64.RawStdEncoding.EncodeToString(response))
 	return request.Reply(accepted, response)
@@ -142,7 +142,7 @@ func handleNewChannel(connection *conn, newChannel *sshutils.NewChannel) error {
 	if err == nil {
 		payloadString = payload.String()
 		accepted = true
-		}
+	}
 	fmt.Fprintf(terminal, "< %v new_channel type=%q payload=%q\n", connection.id, newChannel.ChannelType(), payloadString)
 	if !accepted {
 		fmt.Fprintf(terminal, " > accepted=%v\n", accepted)
@@ -353,10 +353,36 @@ var commands = []command{
 			connection := connections[connectionId]
 			channel := connection.channels[channelId]
 			_, err = channel.Write([]byte(data))
+			return err
+		},
+	},
+	{
+		aliases:     []string{"write-b64"},
+		description: "write base64-encoded data to a channel",
+		usage:       "<connection> <channel> <b64_data>",
+		action: func(args []string) error {
+			if len(args) != 3 {
+				return usage
+			}
+			connectionId, err := strconv.Atoi(args[0])
 			if err != nil {
 				return err
 			}
-			return nil
+			channelId, err := strconv.Atoi(args[1])
+			if err != nil {
+				return err
+			}
+			data, err := base64.StdEncoding.DecodeString(args[2])
+			if err != nil {
+				return err
+			}
+			mutex.Lock()
+			defer mutex.Unlock()
+			fmt.Fprintf(terminal, "> %v:%v %q\n", connectionId, channelId, data)
+			connection := connections[connectionId]
+			channel := connection.channels[channelId]
+			_, err = channel.Write(data)
+			return err
 		},
 	},
 }
