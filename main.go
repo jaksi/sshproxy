@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"os"
@@ -60,37 +61,33 @@ var (
 func handleGlobalRequest(connection *conn, request *ssh.Request) error {
 	mutex.Lock()
 	defer mutex.Unlock()
-	fmt.Fprintf(terminal, "%v: global request: %v\n", connection.id, request.Type)
+	payloadString := base64.StdEncoding.EncodeToString(request.Payload)
+	accepted := false
+	var response []byte
 	payload, err := sshutils.UnmarshalGlobalRequestPayload(request)
-	if err != nil {
-		if err := request.Reply(false, nil); err != nil {
-			return err
+	if err == nil {
+		payloadString = payload.String()
+		accepted = true
 		}
-		return err
-	}
-	fmt.Fprintf(terminal, "payload: %v\n", payload)
-	if err := request.Reply(true, nil); err != nil {
-		return err
-	}
-	return nil
+	fmt.Fprintf(terminal, "< %v global_request type=%q want_reply=%v payload=%q\n", connection.id, request.Type, request.WantReply, payloadString)
+	fmt.Fprintf(terminal, " > accepted=%v response=%q\n", accepted, base64.RawStdEncoding.EncodeToString(response))
+	return request.Reply(accepted, response)
 }
 
 func handleChannelRequest(connection *conn, channel *sshutils.Channel, request *ssh.Request) error {
 	mutex.Lock()
 	defer mutex.Unlock()
-	fmt.Fprintf(terminal, "%v: %v: channel request: %v\n", connection.id, channel, request.Type)
+	payloadString := base64.StdEncoding.EncodeToString(request.Payload)
+	accepted := false
+	var response []byte
 	payload, err := sshutils.UnmarshalChannelRequestPayload(request)
-	if err != nil {
-		if err := request.Reply(false, nil); err != nil {
-			return err
+	if err == nil {
+		payloadString = payload.String()
+		accepted = true
 		}
-		return err
-	}
-	fmt.Fprintf(terminal, "payload: %v\n", payload)
-	if err := request.Reply(true, nil); err != nil {
-		return err
-	}
-	return nil
+	fmt.Fprintf(terminal, "< %v:%v channel_request type=%q want_reply=%v payload=%q\n", connection.id, channel.ChannelID(), request.Type, request.WantReply, payloadString)
+	fmt.Fprintf(terminal, " > accepted=%v response=%q\n", accepted, base64.RawStdEncoding.EncodeToString(response))
+	return request.Reply(accepted, response)
 }
 
 func handleChannel(connection *conn, channel *sshutils.Channel) {
@@ -125,7 +122,7 @@ func handleChannel(connection *conn, channel *sshutils.Channel) {
 			return
 		}
 		if n > 0 {
-			fmt.Fprintf(terminal, "%v: %v: channel data: %q\n", connection.id, channel, string(buffer[:n]))
+			fmt.Fprintf(terminal, "< %v:%v %q\n", connection.id, channel, string(buffer[:n]))
 		}
 		if pty {
 			if _, err := channel.Write([]byte(strings.ReplaceAll(string(buffer[:n]), "\r", "\r\n"))); err != nil {
@@ -139,21 +136,24 @@ func handleChannel(connection *conn, channel *sshutils.Channel) {
 func handleNewChannel(connection *conn, newChannel *sshutils.NewChannel) error {
 	mutex.Lock()
 	defer mutex.Unlock()
-	fmt.Fprintf(terminal, "%v: new channel: %v\n", connection.id, newChannel)
+	payloadString := base64.StdEncoding.EncodeToString(newChannel.ExtraData())
+	accepted := false
 	payload, err := newChannel.Payload()
-	if err != nil {
-		if err := newChannel.Reject(ssh.UnknownChannelType, "unknown channel type"); err != nil {
-			return err
+	if err == nil {
+		payloadString = payload.String()
+		accepted = true
 		}
-		return err
+	fmt.Fprintf(terminal, "< %v new_channel type=%q payload=%q\n", connection.id, newChannel.ChannelType(), payloadString)
+	if !accepted {
+		fmt.Fprintf(terminal, " > accepted=%v\n", accepted)
+		return newChannel.Reject(ssh.Prohibited, "channel type not accepted")
 	}
-	fmt.Fprintf(terminal, "payload: %v\n", payload)
 	channel, err := newChannel.AcceptChannel()
 	if err != nil {
 		return err
 	}
+	fmt.Fprintf(terminal, " > accepted=%v channel_id=%v\n", accepted, channel.ChannelID())
 	connection.channels = append(connection.channels, channel)
-	fmt.Fprintf(terminal, "accepted: %v\n", channel)
 	go handleChannel(connection, channel)
 	return nil
 }
@@ -226,7 +226,7 @@ var commands = []command{
 			maxId++
 			connections = append(connections, connection)
 			mutex.Unlock()
-			fmt.Fprintf(terminal, "connected: %v\n", connection.id)
+			fmt.Fprintf(terminal, "> connection_id=%v\n", connection.id)
 			go handleConn(connection)
 			return nil
 		},
@@ -259,7 +259,7 @@ var commands = []command{
 			maxId++
 			connections = append(connections, connection)
 			mutex.Unlock()
-			fmt.Fprintf(terminal, "connected: %v\n", connection.id)
+			fmt.Fprintf(terminal, "> connection_id=%v\n", connection.id)
 			go handleConn(connection)
 			return nil
 		},
@@ -306,7 +306,7 @@ var commands = []command{
 			maxId++
 			connections = append(connections, connection)
 			mutex.Unlock()
-			fmt.Fprintf(terminal, "accepted: %v: %v\n", connection.id, connection.Conn.RemoteAddr())
+			fmt.Fprintf(terminal, "< connection_id=%v remote_address=%v\n", connection.id, c.RemoteAddr())
 			go handleConn(connection)
 			return nil
 		},
@@ -349,6 +349,7 @@ var commands = []command{
 			data := strings.Join(args[2:], " ")
 			mutex.Lock()
 			defer mutex.Unlock()
+			fmt.Fprintf(terminal, "> %v:%v %q\n", connectionId, channelId, data)
 			connection := connections[connectionId]
 			channel := connection.channels[channelId]
 			_, err = channel.Write([]byte(data))
