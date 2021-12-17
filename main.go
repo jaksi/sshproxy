@@ -385,6 +385,42 @@ var commands = []command{
 			return err
 		},
 	},
+	{
+		aliases:     []string{"global-request", "gr"},
+		description: "send a global request",
+		usage:       "<connection> <type> <want reply> [<b64 payload>]",
+		action: func(args []string) error {
+			if len(args) < 3 || len(args) > 4 {
+				return usage
+			}
+			connectionId, err := strconv.Atoi(args[0])
+			if err != nil {
+				return err
+			}
+			requestType := args[1]
+			wantReply, err := strconv.ParseBool(args[2])
+			if err != nil {
+				return err
+			}
+			var payload []byte
+			if len(args) == 4 {
+				payload, err = base64.StdEncoding.DecodeString(args[3])
+				if err != nil {
+					return err
+				}
+			}
+			mutex.Lock()
+			defer mutex.Unlock()
+			connection := connections[connectionId]
+			fmt.Fprintf(terminal, "> %v global_request type=%q want_reply=%v payload=%q\n", connectionId, requestType, wantReply, payload)
+			accepted, response, err := connection.SendRequest(requestType, wantReply, payload)
+			if err != nil {
+				return err
+			}
+			fmt.Fprintf(terminal, " < accepted=%v response=%q\n", accepted, response)
+			return nil
+		},
+	},
 }
 
 func init() {
