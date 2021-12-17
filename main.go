@@ -421,6 +421,47 @@ var commands = []command{
 			return nil
 		},
 	},
+	{
+		aliases:     []string{"channel-request", "cr"},
+		description: "send a channel request",
+		usage:       "<connection> <channel> <type> <want reply> [<b64 payload>]",
+		action: func(args []string) error {
+			if len(args) < 4 || len(args) > 5 {
+				return usage
+			}
+			connectionId, err := strconv.Atoi(args[0])
+			if err != nil {
+				return err
+			}
+			channelId, err := strconv.Atoi(args[1])
+			if err != nil {
+				return err
+			}
+			requestType := args[2]
+			wantReply, err := strconv.ParseBool(args[3])
+			if err != nil {
+				return err
+			}
+			var payload []byte
+			if len(args) == 5 {
+				payload, err = base64.StdEncoding.DecodeString(args[4])
+				if err != nil {
+					return err
+				}
+			}
+			mutex.Lock()
+			defer mutex.Unlock()
+			connection := connections[connectionId]
+			channel := connection.channels[channelId]
+			fmt.Fprintf(terminal, "> %v:%v channel_request type=%q want_reply=%v payload=%q\n", connectionId, channelId, requestType, wantReply, payload)
+			accepted, err := channel.SendRequest(requestType, wantReply, payload)
+			if err != nil {
+				return err
+			}
+			fmt.Fprintf(terminal, " < accepted=%v\n", accepted)
+			return nil
+		},
+	},
 }
 
 func init() {
