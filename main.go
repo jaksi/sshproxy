@@ -226,7 +226,7 @@ var commands = []command{
 			maxId++
 			connections = append(connections, connection)
 			mutex.Unlock()
-			fmt.Fprintf(terminal, "> connection_id=%v\n", connection.id)
+			fmt.Fprintf(terminal, "connection_id=%v\n", connection.id)
 			go handleConn(connection)
 			return nil
 		},
@@ -259,7 +259,7 @@ var commands = []command{
 			maxId++
 			connections = append(connections, connection)
 			mutex.Unlock()
-			fmt.Fprintf(terminal, "> connection_id=%v\n", connection.id)
+			fmt.Fprintf(terminal, "connection_id=%v\n", connection.id)
 			go handleConn(connection)
 			return nil
 		},
@@ -306,7 +306,7 @@ var commands = []command{
 			maxId++
 			connections = append(connections, connection)
 			mutex.Unlock()
-			fmt.Fprintf(terminal, "< connection_id=%v remote_address=%v\n", connection.id, c.RemoteAddr())
+			fmt.Fprintf(terminal, "connection_id=%v remote_address=%v\n", connection.id, c.RemoteAddr())
 			go handleConn(connection)
 			return nil
 		},
