@@ -192,7 +192,7 @@ func handleConn(connection *conn) {
 
 var commands = []command{
 	{
-		aliases:     []string{"exit", "quit"},
+		aliases:     []string{"exit", "quit", "q"},
 		description: "exit the program",
 		usage:       "",
 		action: func(args []string) error {
@@ -203,7 +203,7 @@ var commands = []command{
 		},
 	},
 	{
-		aliases:     []string{"connect"},
+		aliases:     []string{"connect-password", "cp"},
 		description: "connect to a server using a password",
 		usage:       "<address> <user> <password>",
 		action: func(args []string) error {
@@ -232,7 +232,7 @@ var commands = []command{
 		},
 	},
 	{
-		aliases:     []string{"connect-key"},
+		aliases:     []string{"connect-key", "ck"},
 		description: "connect to a server using a private key",
 		usage:       "<address> <user> <private key>",
 		action: func(args []string) error {
@@ -265,7 +265,7 @@ var commands = []command{
 		},
 	},
 	{
-		aliases:     []string{"accept"},
+		aliases:     []string{"accept", "a"},
 		description: "listen on the specified address and accept a single connection",
 		usage:       "<address> [<host_key_file>]",
 		action: func(args []string) error {
@@ -312,7 +312,7 @@ var commands = []command{
 		},
 	},
 	{
-		aliases:     []string{"ls"},
+		aliases:     []string{"ls", "l"},
 		description: "list active connections",
 		usage:       "",
 		action: func(args []string) error {
@@ -331,7 +331,7 @@ var commands = []command{
 		},
 	},
 	{
-		aliases:     []string{"write"},
+		aliases:     []string{"write", "w"},
 		description: "write data to a channel",
 		usage:       "<connection> <channel> <data ...>",
 		action: func(args []string) error {
@@ -357,7 +357,7 @@ var commands = []command{
 		},
 	},
 	{
-		aliases:     []string{"write-b64"},
+		aliases:     []string{"write-b64", "wb"},
 		description: "write base64-encoded data to a channel",
 		usage:       "<connection> <channel> <b64_data>",
 		action: func(args []string) error {
