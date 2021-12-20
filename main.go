@@ -47,7 +47,7 @@ func (s side) String() string {
 type conn struct {
 	*sshutils.Conn
 	id       int
-	side     side
+	s        side
 	channels []*sshutils.Channel
 }
 
@@ -302,7 +302,7 @@ var commands = []command{
 				return err
 			}
 			mutex.Lock()
-			connection := &conn{c, maxId, client, []*sshutils.Channel{}}
+			connection := &conn{c, maxId, server, []*sshutils.Channel{}}
 			maxId++
 			connections = append(connections, connection)
 			mutex.Unlock()
@@ -321,7 +321,7 @@ var commands = []command{
 			}
 			mutex.Lock()
 			for _, connection := range connections {
-				fmt.Fprintf(terminal, "%v: %v, %v\n", connection.id, connection.side, connection.RemoteAddr())
+				fmt.Fprintf(terminal, "%v: %v, %v\n", connection.id, connection.s, connection.RemoteAddr())
 				for _, channel := range connection.channels {
 					fmt.Fprintf(terminal, "  %v: %v\n", channel, channel.ChannelType())
 				}
@@ -513,6 +513,49 @@ var commands = []command{
 				return err
 			}
 			fmt.Fprintf(terminal, " < accepted=%v\n", accepted)
+			return nil
+		},
+	},
+	{
+		aliases:     []string{"channel", "c"},
+		description: "open a channel",
+		usage:       "<connection> <type> [<b64 payload>]",
+		action: func(args []string) error {
+			if len(args) < 2 || len(args) > 3 {
+				return usage
+			}
+			connectionId, err := strconv.Atoi(args[0])
+			if err != nil {
+				return err
+			}
+			channelType := args[1]
+			var payload []byte
+			if len(args) == 3 {
+				payload, err = base64.StdEncoding.DecodeString(args[2])
+				if err != nil {
+					return err
+				}
+			}
+			mutex.Lock()
+			defer mutex.Unlock()
+			var connection *conn
+			for _, c := range connections {
+				if c.id == connectionId {
+					connection = c
+					break
+				}
+			}
+			if connection == nil {
+				return fmt.Errorf("connection %v does not exist", connectionId)
+			}
+			fmt.Fprintf(terminal, "> %v new_channel type=%q payload=%q\n", connectionId, channelType, payload)
+			channel, err := connection.NewChannel(channelType, payload)
+			if err != nil {
+				return err
+			}
+			fmt.Fprintf(terminal, " < channel_id=%v\n", channel.ChannelID())
+			connection.channels = append(connection.channels, channel)
+			go handleChannel(connection, channel)
 			return nil
 		},
 	},
