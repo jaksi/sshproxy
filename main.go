@@ -342,16 +342,31 @@ var commands = []command{
 			if err != nil {
 				return err
 			}
-			channelId, err := strconv.Atoi(args[1])
-			if err != nil {
-				return err
-			}
+			channelId := args[1]
 			data := strings.Join(args[2:], " ")
 			mutex.Lock()
 			defer mutex.Unlock()
+			var connection *conn
+			for _, c := range connections {
+				if c.id == connectionId {
+					connection = c
+					break
+				}
+			}
+			if connection == nil {
+				return fmt.Errorf("connection %v does not exist", connectionId)
+			}
+			var channel *sshutils.Channel
+			for _, c := range connection.channels {
+				if c.ChannelID() == channelId {
+					channel = c
+					break
+				}
+			}
+			if channel == nil {
+				return fmt.Errorf("channel %v does not exist", channelId)
+			}
 			fmt.Fprintf(terminal, "> %v:%v %q\n", connectionId, channelId, data)
-			connection := connections[connectionId]
-			channel := connection.channels[channelId]
 			_, err = channel.Write([]byte(data))
 			return err
 		},
@@ -368,19 +383,34 @@ var commands = []command{
 			if err != nil {
 				return err
 			}
-			channelId, err := strconv.Atoi(args[1])
-			if err != nil {
-				return err
-			}
+			channelId := args[1]
 			data, err := base64.StdEncoding.DecodeString(args[2])
 			if err != nil {
 				return err
 			}
 			mutex.Lock()
 			defer mutex.Unlock()
+			var connection *conn
+			for _, c := range connections {
+				if c.id == connectionId {
+					connection = c
+					break
+				}
+			}
+			if connection == nil {
+				return fmt.Errorf("connection %v does not exist", connectionId)
+			}
+			var channel *sshutils.Channel
+			for _, c := range connection.channels {
+				if c.ChannelID() == channelId {
+					channel = c
+					break
+				}
+			}
+			if channel == nil {
+				return fmt.Errorf("channel %v does not exist", channelId)
+			}
 			fmt.Fprintf(terminal, "> %v:%v %q\n", connectionId, channelId, data)
-			connection := connections[connectionId]
-			channel := connection.channels[channelId]
 			_, err = channel.Write(data)
 			return err
 		},
@@ -411,7 +441,16 @@ var commands = []command{
 			}
 			mutex.Lock()
 			defer mutex.Unlock()
-			connection := connections[connectionId]
+			var connection *conn
+			for _, c := range connections {
+				if c.id == connectionId {
+					connection = c
+					break
+				}
+			}
+			if connection == nil {
+				return fmt.Errorf("connection %v does not exist", connectionId)
+			}
 			fmt.Fprintf(terminal, "> %v global_request type=%q want_reply=%v payload=%q\n", connectionId, requestType, wantReply, payload)
 			accepted, response, err := connection.SendRequest(requestType, wantReply, payload)
 			if err != nil {
@@ -433,10 +472,7 @@ var commands = []command{
 			if err != nil {
 				return err
 			}
-			channelId, err := strconv.Atoi(args[1])
-			if err != nil {
-				return err
-			}
+			channelId := args[1]
 			requestType := args[2]
 			wantReply, err := strconv.ParseBool(args[3])
 			if err != nil {
@@ -451,8 +487,26 @@ var commands = []command{
 			}
 			mutex.Lock()
 			defer mutex.Unlock()
-			connection := connections[connectionId]
-			channel := connection.channels[channelId]
+			var connection *conn
+			for _, c := range connections {
+				if c.id == connectionId {
+					connection = c
+					break
+				}
+			}
+			if connection == nil {
+				return fmt.Errorf("connection %v does not exist", connectionId)
+			}
+			var channel *sshutils.Channel
+			for _, c := range connection.channels {
+				if c.ChannelID() == channelId {
+					channel = c
+					break
+				}
+			}
+			if channel == nil {
+				return fmt.Errorf("channel %v does not exist", channelId)
+			}
 			fmt.Fprintf(terminal, "> %v:%v channel_request type=%q want_reply=%v payload=%q\n", connectionId, channelId, requestType, wantReply, payload)
 			accepted, err := channel.SendRequest(requestType, wantReply, payload)
 			if err != nil {
