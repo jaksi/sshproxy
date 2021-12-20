@@ -47,7 +47,7 @@ func (s side) String() string {
 type conn struct {
 	*sshutils.Conn
 	id       int
-	side     side
+	s        side
 	channels []*sshutils.Channel
 }
 
@@ -302,7 +302,7 @@ var commands = []command{
 				return err
 			}
 			mutex.Lock()
-			connection := &conn{c, maxId, client, []*sshutils.Channel{}}
+			connection := &conn{c, maxId, server, []*sshutils.Channel{}}
 			maxId++
 			connections = append(connections, connection)
 			mutex.Unlock()
@@ -321,7 +321,7 @@ var commands = []command{
 			}
 			mutex.Lock()
 			for _, connection := range connections {
-				fmt.Fprintf(terminal, "%v: %v, %v\n", connection.id, connection.side, connection.RemoteAddr())
+				fmt.Fprintf(terminal, "%v: %v, %v\n", connection.id, connection.s, connection.RemoteAddr())
 				for _, channel := range connection.channels {
 					fmt.Fprintf(terminal, "  %v: %v\n", channel, channel.ChannelType())
 				}
