@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"os"
@@ -60,37 +61,33 @@ var (
 func handleGlobalRequest(connection *conn, request *ssh.Request) error {
 	mutex.Lock()
 	defer mutex.Unlock()
-	fmt.Fprintf(terminal, "%v: global request: %v\n", connection.id, request.Type)
+	payloadString := base64.StdEncoding.EncodeToString(request.Payload)
+	accepted := false
+	var response []byte
 	payload, err := sshutils.UnmarshalGlobalRequestPayload(request)
-	if err != nil {
-		if err := request.Reply(false, nil); err != nil {
-			return err
-		}
-		return err
+	if err == nil {
+		payloadString = payload.String()
+		accepted = true
 	}
-	fmt.Fprintf(terminal, "payload: %v\n", payload)
-	if err := request.Reply(true, nil); err != nil {
-		return err
-	}
-	return nil
+	fmt.Fprintf(terminal, "< %v global_request type=%q want_reply=%v payload=%q\n", connection.id, request.Type, request.WantReply, payloadString)
+	fmt.Fprintf(terminal, " > accepted=%v response=%q\n", accepted, base64.RawStdEncoding.EncodeToString(response))
+	return request.Reply(accepted, response)
 }
 
 func handleChannelRequest(connection *conn, channel *sshutils.Channel, request *ssh.Request) error {
 	mutex.Lock()
 	defer mutex.Unlock()
-	fmt.Fprintf(terminal, "%v: %v: channel request: %v\n", connection.id, channel, request.Type)
+	payloadString := base64.StdEncoding.EncodeToString(request.Payload)
+	accepted := false
+	var response []byte
 	payload, err := sshutils.UnmarshalChannelRequestPayload(request)
-	if err != nil {
-		if err := request.Reply(false, nil); err != nil {
-			return err
-		}
-		return err
+	if err == nil {
+		payloadString = payload.String()
+		accepted = true
 	}
-	fmt.Fprintf(terminal, "payload: %v\n", payload)
-	if err := request.Reply(true, nil); err != nil {
-		return err
-	}
-	return nil
+	fmt.Fprintf(terminal, "< %v:%v channel_request type=%q want_reply=%v payload=%q\n", connection.id, channel.ChannelID(), request.Type, request.WantReply, payloadString)
+	fmt.Fprintf(terminal, " > accepted=%v response=%q\n", accepted, base64.RawStdEncoding.EncodeToString(response))
+	return request.Reply(accepted, response)
 }
 
 func handleChannel(connection *conn, channel *sshutils.Channel) {
@@ -125,7 +122,7 @@ func handleChannel(connection *conn, channel *sshutils.Channel) {
 			return
 		}
 		if n > 0 {
-			fmt.Fprintf(terminal, "%v: %v: channel data: %q\n", connection.id, channel, string(buffer[:n]))
+			fmt.Fprintf(terminal, "< %v:%v %q\n", connection.id, channel, string(buffer[:n]))
 		}
 		if pty {
 			if _, err := channel.Write([]byte(strings.ReplaceAll(string(buffer[:n]), "\r", "\r\n"))); err != nil {
@@ -139,21 +136,24 @@ func handleChannel(connection *conn, channel *sshutils.Channel) {
 func handleNewChannel(connection *conn, newChannel *sshutils.NewChannel) error {
 	mutex.Lock()
 	defer mutex.Unlock()
-	fmt.Fprintf(terminal, "%v: new channel: %v\n", connection.id, newChannel)
+	payloadString := base64.StdEncoding.EncodeToString(newChannel.ExtraData())
+	accepted := false
 	payload, err := newChannel.Payload()
-	if err != nil {
-		if err := newChannel.Reject(ssh.UnknownChannelType, "unknown channel type"); err != nil {
-			return err
-		}
-		return err
+	if err == nil {
+		payloadString = payload.String()
+		accepted = true
 	}
-	fmt.Fprintf(terminal, "payload: %v\n", payload)
+	fmt.Fprintf(terminal, "< %v new_channel type=%q payload=%q\n", connection.id, newChannel.ChannelType(), payloadString)
+	if !accepted {
+		fmt.Fprintf(terminal, " > accepted=%v\n", accepted)
+		return newChannel.Reject(ssh.Prohibited, "channel type not accepted")
+	}
 	channel, err := newChannel.AcceptChannel()
 	if err != nil {
 		return err
 	}
+	fmt.Fprintf(terminal, " > accepted=%v channel_id=%v\n", accepted, channel.ChannelID())
 	connection.channels = append(connection.channels, channel)
-	fmt.Fprintf(terminal, "accepted: %v\n", channel)
 	go handleChannel(connection, channel)
 	return nil
 }
@@ -192,7 +192,7 @@ func handleConn(connection *conn) {
 
 var commands = []command{
 	{
-		aliases:     []string{"exit", "quit"},
+		aliases:     []string{"exit", "quit", "q"},
 		description: "exit the program",
 		usage:       "",
 		action: func(args []string) error {
@@ -203,7 +203,7 @@ var commands = []command{
 		},
 	},
 	{
-		aliases:     []string{"connect"},
+		aliases:     []string{"connect-password", "cp"},
 		description: "connect to a server using a password",
 		usage:       "<address> <user> <password>",
 		action: func(args []string) error {
@@ -226,13 +226,13 @@ var commands = []command{
 			maxId++
 			connections = append(connections, connection)
 			mutex.Unlock()
-			fmt.Fprintf(terminal, "connected: %v\n", connection.id)
+			fmt.Fprintf(terminal, "connection_id=%v\n", connection.id)
 			go handleConn(connection)
 			return nil
 		},
 	},
 	{
-		aliases:     []string{"connect-key"},
+		aliases:     []string{"connect-key", "ck"},
 		description: "connect to a server using a private key",
 		usage:       "<address> <user> <private key>",
 		action: func(args []string) error {
@@ -259,13 +259,13 @@ var commands = []command{
 			maxId++
 			connections = append(connections, connection)
 			mutex.Unlock()
-			fmt.Fprintf(terminal, "connected: %v\n", connection.id)
+			fmt.Fprintf(terminal, "connection_id=%v\n", connection.id)
 			go handleConn(connection)
 			return nil
 		},
 	},
 	{
-		aliases:     []string{"accept"},
+		aliases:     []string{"accept", "a"},
 		description: "listen on the specified address and accept a single connection",
 		usage:       "<address> [<host_key_file>]",
 		action: func(args []string) error {
@@ -306,13 +306,13 @@ var commands = []command{
 			maxId++
 			connections = append(connections, connection)
 			mutex.Unlock()
-			fmt.Fprintf(terminal, "accepted: %v: %v\n", connection.id, connection.Conn.RemoteAddr())
+			fmt.Fprintf(terminal, "connection_id=%v remote_address=%v\n", connection.id, c.RemoteAddr())
 			go handleConn(connection)
 			return nil
 		},
 	},
 	{
-		aliases:     []string{"ls"},
+		aliases:     []string{"ls", "l"},
 		description: "list active connections",
 		usage:       "",
 		action: func(args []string) error {
@@ -331,7 +331,7 @@ var commands = []command{
 		},
 	},
 	{
-		aliases:     []string{"write"},
+		aliases:     []string{"write", "w"},
 		description: "write data to a channel",
 		usage:       "<connection> <channel> <data ...>",
 		action: func(args []string) error {
@@ -342,19 +342,177 @@ var commands = []command{
 			if err != nil {
 				return err
 			}
-			channelId, err := strconv.Atoi(args[1])
-			if err != nil {
-				return err
-			}
+			channelId := args[1]
 			data := strings.Join(args[2:], " ")
 			mutex.Lock()
 			defer mutex.Unlock()
-			connection := connections[connectionId]
-			channel := connection.channels[channelId]
+			var connection *conn
+			for _, c := range connections {
+				if c.id == connectionId {
+					connection = c
+					break
+				}
+			}
+			if connection == nil {
+				return fmt.Errorf("connection %v does not exist", connectionId)
+			}
+			var channel *sshutils.Channel
+			for _, c := range connection.channels {
+				if c.ChannelID() == channelId {
+					channel = c
+					break
+				}
+			}
+			if channel == nil {
+				return fmt.Errorf("channel %v does not exist", channelId)
+			}
+			fmt.Fprintf(terminal, "> %v:%v %q\n", connectionId, channelId, data)
 			_, err = channel.Write([]byte(data))
+			return err
+		},
+	},
+	{
+		aliases:     []string{"write-b64", "wb"},
+		description: "write base64-encoded data to a channel",
+		usage:       "<connection> <channel> <b64_data>",
+		action: func(args []string) error {
+			if len(args) != 3 {
+				return usage
+			}
+			connectionId, err := strconv.Atoi(args[0])
 			if err != nil {
 				return err
 			}
+			channelId := args[1]
+			data, err := base64.StdEncoding.DecodeString(args[2])
+			if err != nil {
+				return err
+			}
+			mutex.Lock()
+			defer mutex.Unlock()
+			var connection *conn
+			for _, c := range connections {
+				if c.id == connectionId {
+					connection = c
+					break
+				}
+			}
+			if connection == nil {
+				return fmt.Errorf("connection %v does not exist", connectionId)
+			}
+			var channel *sshutils.Channel
+			for _, c := range connection.channels {
+				if c.ChannelID() == channelId {
+					channel = c
+					break
+				}
+			}
+			if channel == nil {
+				return fmt.Errorf("channel %v does not exist", channelId)
+			}
+			fmt.Fprintf(terminal, "> %v:%v %q\n", connectionId, channelId, data)
+			_, err = channel.Write(data)
+			return err
+		},
+	},
+	{
+		aliases:     []string{"global-request", "gr"},
+		description: "send a global request",
+		usage:       "<connection> <type> <want reply> [<b64 payload>]",
+		action: func(args []string) error {
+			if len(args) < 3 || len(args) > 4 {
+				return usage
+			}
+			connectionId, err := strconv.Atoi(args[0])
+			if err != nil {
+				return err
+			}
+			requestType := args[1]
+			wantReply, err := strconv.ParseBool(args[2])
+			if err != nil {
+				return err
+			}
+			var payload []byte
+			if len(args) == 4 {
+				payload, err = base64.StdEncoding.DecodeString(args[3])
+				if err != nil {
+					return err
+				}
+			}
+			mutex.Lock()
+			defer mutex.Unlock()
+			var connection *conn
+			for _, c := range connections {
+				if c.id == connectionId {
+					connection = c
+					break
+				}
+			}
+			if connection == nil {
+				return fmt.Errorf("connection %v does not exist", connectionId)
+			}
+			fmt.Fprintf(terminal, "> %v global_request type=%q want_reply=%v payload=%q\n", connectionId, requestType, wantReply, payload)
+			accepted, response, err := connection.SendRequest(requestType, wantReply, payload)
+			if err != nil {
+				return err
+			}
+			fmt.Fprintf(terminal, " < accepted=%v response=%q\n", accepted, response)
+			return nil
+		},
+	},
+	{
+		aliases:     []string{"channel-request", "cr"},
+		description: "send a channel request",
+		usage:       "<connection> <channel> <type> <want reply> [<b64 payload>]",
+		action: func(args []string) error {
+			if len(args) < 4 || len(args) > 5 {
+				return usage
+			}
+			connectionId, err := strconv.Atoi(args[0])
+			if err != nil {
+				return err
+			}
+			channelId := args[1]
+			requestType := args[2]
+			wantReply, err := strconv.ParseBool(args[3])
+			if err != nil {
+				return err
+			}
+			var payload []byte
+			if len(args) == 5 {
+				payload, err = base64.StdEncoding.DecodeString(args[4])
+				if err != nil {
+					return err
+				}
+			}
+			mutex.Lock()
+			defer mutex.Unlock()
+			var connection *conn
+			for _, c := range connections {
+				if c.id == connectionId {
+					connection = c
+					break
+				}
+			}
+			if connection == nil {
+				return fmt.Errorf("connection %v does not exist", connectionId)
+			}
+			var channel *sshutils.Channel
+			for _, c := range connection.channels {
+				if c.ChannelID() == channelId {
+					channel = c
+					break
+				}
+			}
+			if channel == nil {
+				return fmt.Errorf("channel %v does not exist", channelId)
+			}
+			fmt.Fprintf(terminal, "> %v:%v channel_request type=%q want_reply=%v payload=%q\n", connectionId, channelId, requestType, wantReply, payload)
+			accepted, err := channel.SendRequest(requestType, wantReply, payload)
+			if err != nil {
+				return err
+			}
+			fmt.Fprintf(terminal, " < accepted=%v\n", accepted)
 			return nil
 		},
 	},
