@@ -1,2 +1,12 @@
 linters:
   enable-all: true
+  disable:
+    - wsl
+    - exhaustivestruct
+    - exhaustruct
+    - nlreturn
+    - funlen
+    - nestif
+    - cyclop
+    - wrapcheck
+    - gosec
