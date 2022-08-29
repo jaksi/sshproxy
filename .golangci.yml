@@ -1,2 +1,21 @@
 linters:
   enable-all: true
+  disable:
+    - wsl
+    - maligned
+    - nlreturn
+    - varnamelen
+    - gochecknoglobals
+    - exhaustivestruct
+    - exhaustruct
+    - cyclop
+    - gocognit
+    - funlen
+    - godox
+
+linters-settings:
+  tagliatelle:
+    case:
+      use-field-name: true
+      rules:
+        json: snake
