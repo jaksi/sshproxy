@@ -172,17 +172,19 @@ func logEvent(source eventSource, e event) {
 	log.Print(string(msg))
 }
 
-func proxyChannels(client, server *sshutils.Channel) {
+type channelContext struct {
+	*sshutils.Channel
+	wg sync.WaitGroup
+}
+
+func proxyChannelStdouts(client, server *channelContext) {
 	clientEOF := false
 	serverEOF := false
 	var eofLock sync.Mutex
-	var (
-		clientWG sync.WaitGroup
-		serverWG sync.WaitGroup
-	)
-	clientWG.Add(1)
+
+	client.wg.Add(1)
 	go func() {
-		defer clientWG.Done()
+		defer client.wg.Done()
 		buffer := make([]byte, bufferSize)
 		for {
 			n, err := client.Read(buffer)
@@ -207,9 +209,10 @@ func proxyChannels(client, server *sshutils.Channel) {
 			logEvent(sClient, channelDataEvent{Channel: client.ChannelID(), Data: string(buffer[:n])})
 		}
 	}()
-	serverWG.Add(1)
+
+	server.wg.Add(1)
 	go func() {
-		defer serverWG.Done()
+		defer server.wg.Done()
 		buffer := make([]byte, bufferSize)
 		for {
 			n, err := server.Read(buffer)
@@ -234,49 +237,70 @@ func proxyChannels(client, server *sshutils.Channel) {
 			logEvent(sServer, channelDataEvent{Channel: server.ChannelID(), Data: string(buffer[:n])})
 		}
 	}()
-	clientWG.Add(1)
-	go func() {
-		defer clientWG.Done()
-		buffer := make([]byte, bufferSize)
-		for {
-			n, err := client.Stderr().Read(buffer)
-			if err != nil {
-				if !errors.Is(err, io.EOF) {
-					panic(err)
-				}
-				break
-			}
-			if _, err := server.Stderr().Write(buffer[:n]); err != nil {
+}
+
+func proxyChannelStderr(local, remote *sshutils.Channel, source eventSource) {
+	buffer := make([]byte, bufferSize)
+	for {
+		n, err := local.Stderr().Read(buffer)
+		if err != nil {
+			if !errors.Is(err, io.EOF) {
 				panic(err)
 			}
-			logEvent(sClient, channelErrorEvent{Channel: client.ChannelID(), Data: string(buffer[:n])})
+			break
 		}
-	}()
-	serverWG.Add(1)
+		if _, err := remote.Stderr().Write(buffer[:n]); err != nil {
+			panic(err)
+		}
+		logEvent(source, channelErrorEvent{Channel: local.ChannelID(), Data: string(buffer[:n])})
+	}
+}
+
+func proxyChannelStderrs(client, server *channelContext) {
+	client.wg.Add(1)
 	go func() {
-		defer serverWG.Done()
-		buffer := make([]byte, bufferSize)
-		for {
-			n, err := server.Stderr().Read(buffer)
-			if err != nil {
-				if !errors.Is(err, io.EOF) {
-					panic(err)
-				}
-				break
-			}
-			if _, err := client.Stderr().Write(buffer[:n]); err != nil {
-				panic(err)
-			}
-			logEvent(sServer, channelErrorEvent{Channel: server.ChannelID(), Data: string(buffer[:n])})
-		}
+		proxyChannelStderr(client.Channel, server.Channel, sClient)
+		client.wg.Done()
 	}()
+
+	server.wg.Add(1)
+	go func() {
+		proxyChannelStderr(server.Channel, client.Channel, sServer)
+		server.wg.Done()
+	}()
+}
+
+func proxyChannelRequest(request *ssh.Request, remote *sshutils.Channel, source eventSource) {
+	accepted, err := remote.RawRequest(request.Type, request.WantReply, request.Payload)
+	if err != nil {
+		panic(err)
+	}
+	if err := request.Reply(accepted, nil); err != nil {
+		panic(err)
+	}
+	logEvent(source, channelRequestEvent{
+		Channel:   remote.ChannelID(),
+		Type:      request.Type,
+		WantReply: request.WantReply,
+		Payload:   string(request.Payload),
+		Accepted:  accepted,
+	})
+}
+
+func proxyChannels(client, server *sshutils.Channel) {
+	clientContext := channelContext{Channel: client, wg: sync.WaitGroup{}}
+	serverContext := channelContext{Channel: server, wg: sync.WaitGroup{}}
+
+	proxyChannelStdouts(&clientContext, &serverContext)
+
+	proxyChannelStderrs(&clientContext, &serverContext)
 
 	for client.Requests != nil || server.Requests != nil {
 		select {
 		case request, ok := <-client.Requests:
 			if !ok {
 				if server.Requests != nil {
-					clientWG.Wait()
+					clientContext.wg.Wait()
 					if err := server.Close(); err != nil {
 						panic(err)
 					}
@@ -285,24 +309,11 @@ func proxyChannels(client, server *sshutils.Channel) {
 				client.Requests = nil
 				continue
 			}
-			accepted, err := server.RawRequest(request.Type, request.WantReply, request.Payload)
-			if err != nil {
-				panic(err)
-			}
-			if err := request.Reply(accepted, nil); err != nil {
-				panic(err)
-			}
-			logEvent(sClient, channelRequestEvent{
-				Channel:   client.ChannelID(),
-				Type:      request.Type,
-				WantReply: request.WantReply,
-				Payload:   string(request.Payload),
-				Accepted:  accepted,
-			})
+			proxyChannelRequest(request, server, sClient)
 		case request, ok := <-server.Requests:
 			if !ok {
 				if client.Requests != nil {
-					serverWG.Wait()
+					serverContext.wg.Wait()
 					if err := client.Close(); err != nil {
 						panic(err)
 					}
@@ -311,21 +322,68 @@ func proxyChannels(client, server *sshutils.Channel) {
 				server.Requests = nil
 				continue
 			}
-			accepted, err := client.RawRequest(request.Type, request.WantReply, request.Payload)
-			if err != nil {
-				panic(err)
-			}
-			if err := request.Reply(accepted, nil); err != nil {
-				panic(err)
-			}
-			logEvent(sServer, channelRequestEvent{
-				Channel:   server.ChannelID(),
-				Type:      request.Type,
-				WantReply: request.WantReply,
-				Payload:   string(request.Payload),
-				Accepted:  accepted,
-			})
+			proxyChannelRequest(request, client, sServer)
 		}
+	}
+}
+
+func proxyGlobalRequest(request *ssh.Request, remote *sshutils.Conn, source eventSource) {
+	accepted, response, err := remote.RawRequest(request.Type, request.WantReply, request.Payload)
+	if err != nil {
+		panic(err)
+	}
+	if err := request.Reply(accepted, response); err != nil {
+		panic(err)
+	}
+	logEvent(source, globalRequestEvent{
+		Type:      request.Type,
+		WantReply: request.WantReply,
+		Payload:   base64.StdEncoding.EncodeToString(request.Payload),
+		Accepted:  accepted,
+		Response:  base64.StdEncoding.EncodeToString(response),
+	})
+}
+
+func proxyNewChannel(newChannel *sshutils.NewChannel, remote *sshutils.Conn, source eventSource) {
+	remoteChannel, err := remote.RawChannel(newChannel.ChannelType(), newChannel.ExtraData())
+	accepted := true
+	var channelID string
+	var rejectReason ssh.RejectionReason
+	var rejectMessage string
+	if err != nil {
+		var openChannelErr *ssh.OpenChannelError
+		if errors.As(err, &openChannelErr) {
+			if err := newChannel.Reject(openChannelErr.Reason, openChannelErr.Message); err != nil {
+				panic(err)
+			}
+			accepted = false
+			rejectReason = openChannelErr.Reason
+			rejectMessage = openChannelErr.Message
+		} else {
+			panic(err)
+		}
+	}
+	var localChannel *sshutils.Channel
+	if accepted {
+		localChannel, err = newChannel.AcceptChannel()
+		if err != nil {
+			panic(err)
+		}
+		if localChannel.ChannelID() != remoteChannel.ChannelID() {
+			panic("channel IDs do not match")
+		}
+		channelID = localChannel.ChannelID()
+	}
+	logEvent(source, newChannelEvent{
+		Type:          newChannel.ChannelType(),
+		Data:          base64.StdEncoding.EncodeToString(newChannel.ExtraData()),
+		Accepted:      accepted,
+		ChannelID:     channelID,
+		RejectReason:  rejectReason,
+		RejectMessage: rejectMessage,
+	})
+	if localChannel != nil {
+		go proxyChannels(localChannel, remoteChannel)
 	}
 }
 
@@ -344,20 +402,7 @@ func proxyConnections(client, server *sshutils.Conn) {
 				client.Requests = nil
 				continue
 			}
-			accepted, response, err := server.RawRequest(request.Type, request.WantReply, request.Payload)
-			if err != nil {
-				panic(err)
-			}
-			if err := request.Reply(accepted, response); err != nil {
-				panic(err)
-			}
-			logEvent(sClient, globalRequestEvent{
-				Type:      request.Type,
-				WantReply: request.WantReply,
-				Payload:   base64.StdEncoding.EncodeToString(request.Payload),
-				Accepted:  accepted,
-				Response:  base64.StdEncoding.EncodeToString(response),
-			})
+			proxyGlobalRequest(request, server, sClient)
 		case request, ok := <-server.Requests:
 			if !ok {
 				if client.Requests != nil {
@@ -373,110 +418,19 @@ func proxyConnections(client, server *sshutils.Conn) {
 				// TODO: spoof that shit
 				continue
 			}
-			accepted, response, err := client.RawRequest(request.Type, request.WantReply, request.Payload)
-			if err != nil {
-				panic(err)
-			}
-			if err := request.Reply(accepted, response); err != nil {
-				panic(err)
-			}
-			logEvent(sServer, globalRequestEvent{
-				Type:      request.Type,
-				WantReply: request.WantReply,
-				Payload:   base64.StdEncoding.EncodeToString(request.Payload),
-				Accepted:  accepted,
-				Response:  base64.StdEncoding.EncodeToString(response),
-			})
+			proxyGlobalRequest(request, client, sServer)
 		case newChannel, ok := <-client.NewChannels:
 			if !ok {
 				client.NewChannels = nil
 				continue
 			}
-			serverChannel, err := server.RawChannel(newChannel.ChannelType(), newChannel.ExtraData())
-			accepted := true
-			var channelID string
-			var rejectReason ssh.RejectionReason
-			var rejectMessage string
-			if err != nil {
-				var openChannelErr *ssh.OpenChannelError
-				if errors.As(err, &openChannelErr) {
-					if err := newChannel.Reject(openChannelErr.Reason, openChannelErr.Message); err != nil {
-						panic(err)
-					}
-					accepted = false
-					rejectReason = openChannelErr.Reason
-					rejectMessage = openChannelErr.Message
-				} else {
-					panic(err)
-				}
-			}
-			var clientChannel *sshutils.Channel
-			if accepted {
-				clientChannel, err = newChannel.AcceptChannel()
-				if err != nil {
-					panic(err)
-				}
-				if clientChannel.ChannelID() != serverChannel.ChannelID() {
-					panic("channel IDs do not match")
-				}
-				channelID = clientChannel.ChannelID()
-			}
-			logEvent(sClient, newChannelEvent{
-				Type:          newChannel.ChannelType(),
-				Data:          base64.StdEncoding.EncodeToString(newChannel.ExtraData()),
-				Accepted:      accepted,
-				ChannelID:     channelID,
-				RejectReason:  rejectReason,
-				RejectMessage: rejectMessage,
-			})
-			if clientChannel != nil {
-				go proxyChannels(clientChannel, serverChannel)
-			}
+			proxyNewChannel(newChannel, server, sClient)
 		case newChannel, ok := <-server.NewChannels:
 			if !ok {
 				server.NewChannels = nil
 				continue
 			}
-			clientChannel, err := client.RawChannel(newChannel.ChannelType(), newChannel.ExtraData())
-			accepted := true
-			var channelID string
-			var rejectReason ssh.RejectionReason
-			var rejectMessage string
-			if err != nil {
-				var openChannelErr *ssh.OpenChannelError
-				if errors.As(err, &openChannelErr) {
-					if err := newChannel.Reject(openChannelErr.Reason, openChannelErr.Message); err != nil {
-						panic(err)
-					}
-					accepted = false
-					rejectReason = openChannelErr.Reason
-					rejectMessage = openChannelErr.Message
-				} else {
-					panic(err)
-				}
-			}
-			var serverChannel *sshutils.Channel
-			if accepted {
-				serverChannel, err = newChannel.AcceptChannel()
-				if err != nil {
-					panic(err)
-				}
-				if serverChannel.ChannelID() != clientChannel.ChannelID() {
-					panic("channel IDs do not match")
-				}
-				channelID = serverChannel.ChannelID()
-			}
-			logEvent(sServer, newChannelEvent{
-				Type:          newChannel.ChannelType(),
-				Data:          base64.StdEncoding.EncodeToString(newChannel.ExtraData()),
-				Accepted:      accepted,
-				ChannelID:     channelID,
-				RejectReason:  rejectReason,
-				RejectMessage: rejectMessage,
-			})
-			if serverChannel != nil {
-				go proxyChannels(clientChannel, serverChannel)
-			}
+			proxyNewChannel(newChannel, client, sServer)
 		}
 	}
 }
@@ -484,7 +438,9 @@ func proxyConnections(client, server *sshutils.Conn) {
 func main() {
 	listenAddress := flag.String("listen", "", "address to listen on")
 	hostKeyFile := flag.String("hostkey", "", "host key file")
+	serverVersion := flag.String("server-version", "SSH-2.0-OpenSSH_9.0", "server version")
 	serverAddress := flag.String("connect", "", "address to connect to")
+	clientVersion := flag.String("client-version", "SSH-2.0-OpenSSH_9.0", "client version")
 	user := flag.String("user", "", "user to connect as")
 	password := flag.String("password", "", "password to connect with")
 	keyFile := flag.String("key", "", "key to connect with")
@@ -503,7 +459,8 @@ func main() {
 		panic(err)
 	}
 	serverConfig := &ssh.ServerConfig{
-		NoClientAuth: true,
+		NoClientAuth:  true,
+		ServerVersion: *serverVersion,
 	}
 	serverConfig.AddHostKey(hostKey)
 	listener, err := sshutils.Listen(*listenAddress, serverConfig)
@@ -519,6 +476,7 @@ func main() {
 	clientConfig := &ssh.ClientConfig{
 		User:            *user,
 		HostKeyCallback: ssh.InsecureIgnoreHostKey(), //nolint: gosec
+		ClientVersion:   *clientVersion,
 	}
 	if *password != "" {
 		clientConfig.Auth = append(clientConfig.Auth, ssh.Password(*password))

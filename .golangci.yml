@@ -9,6 +9,8 @@ linters:
     - exhaustivestruct
     - exhaustruct
     - cyclop
+    - gocognit
+    - funlen
 
 linters-settings:
   tagliatelle:
