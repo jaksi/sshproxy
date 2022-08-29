@@ -11,6 +11,7 @@ linters:
     - cyclop
     - gocognit
     - funlen
+    - godox
 
 linters-settings:
   tagliatelle:
