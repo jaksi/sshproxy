@@ -2,11 +2,17 @@ linters:
   enable-all: true
   disable:
     - wsl
+    - maligned
+    - nlreturn
+    - varnamelen
+    - gochecknoglobals
     - exhaustivestruct
     - exhaustruct
-    - nlreturn
-    - funlen
-    - nestif
     - cyclop
-    - wrapcheck
-    - gosec
+
+linters-settings:
+  tagliatelle:
+    case:
+      use-field-name: true
+      rules:
+        json: snake
