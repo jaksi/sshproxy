@@ -174,13 +174,13 @@ func logEvent(source eventSource, e event) {
 
 type channelContext struct {
 	*sshutils.Channel
-	wg sync.WaitGroup
+	wg  sync.WaitGroup
+	eof *sync.Mutex
 }
 
 func proxyChannelStdouts(client, server *channelContext) {
 	clientEOF := false
 	serverEOF := false
-	var eofLock sync.Mutex
 
 	client.wg.Add(1)
 	go func() {
@@ -192,7 +192,7 @@ func proxyChannelStdouts(client, server *channelContext) {
 				if !errors.Is(err, io.EOF) {
 					panic(err)
 				}
-				eofLock.Lock()
+				client.eof.Lock()
 				clientEOF = true
 				if !serverEOF {
 					if err := server.CloseWrite(); err != nil {
@@ -200,7 +200,7 @@ func proxyChannelStdouts(client, server *channelContext) {
 					}
 					logEvent(sClient, channelEOFEvent{Channel: client.ChannelID()})
 				}
-				eofLock.Unlock()
+				client.eof.Unlock()
 				break
 			}
 			if _, err := server.Write(buffer[:n]); err != nil {
@@ -220,7 +220,7 @@ func proxyChannelStdouts(client, server *channelContext) {
 				if !errors.Is(err, io.EOF) {
 					panic(err)
 				}
-				eofLock.Lock()
+				client.eof.Lock()
 				serverEOF = true
 				if !clientEOF {
 					if err := client.CloseWrite(); err != nil {
@@ -228,7 +228,7 @@ func proxyChannelStdouts(client, server *channelContext) {
 					}
 					logEvent(sServer, channelEOFEvent{Channel: server.ChannelID()})
 				}
-				eofLock.Unlock()
+				client.eof.Unlock()
 				break
 			}
 			if _, err := client.Write(buffer[:n]); err != nil {
@@ -288,8 +288,9 @@ func proxyChannelRequest(request *ssh.Request, remote *sshutils.Channel, source 
 }
 
 func proxyChannels(client, server *sshutils.Channel) {
-	clientContext := channelContext{Channel: client, wg: sync.WaitGroup{}}
-	serverContext := channelContext{Channel: server, wg: sync.WaitGroup{}}
+	var eof sync.Mutex
+	clientContext := channelContext{client, sync.WaitGroup{}, &eof}
+	serverContext := channelContext{server, sync.WaitGroup{}, &eof}
 
 	proxyChannelStdouts(&clientContext, &serverContext)
 
