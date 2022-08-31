@@ -174,14 +174,12 @@ func logEvent(source eventSource, e event) {
 
 type channelContext struct {
 	*sshutils.Channel
-	wg  sync.WaitGroup
-	eof *sync.Mutex
+	wg                  sync.WaitGroup
+	eof                 *sync.Mutex
+	localEOF, remoteEOF *bool
 }
 
 func proxyChannelStdouts(client, server *channelContext) {
-	clientEOF := false
-	serverEOF := false
-
 	client.wg.Add(1)
 	go func() {
 		defer client.wg.Done()
@@ -193,8 +191,8 @@ func proxyChannelStdouts(client, server *channelContext) {
 					panic(err)
 				}
 				client.eof.Lock()
-				clientEOF = true
-				if !serverEOF {
+				*client.localEOF = true
+				if !*client.remoteEOF {
 					if err := server.CloseWrite(); err != nil {
 						panic(err)
 					}
@@ -221,8 +219,8 @@ func proxyChannelStdouts(client, server *channelContext) {
 					panic(err)
 				}
 				client.eof.Lock()
-				serverEOF = true
-				if !clientEOF {
+				*server.localEOF = true
+				if !*server.remoteEOF {
 					if err := client.CloseWrite(); err != nil {
 						panic(err)
 					}
@@ -289,8 +287,10 @@ func proxyChannelRequest(request *ssh.Request, remote *sshutils.Channel, source 
 
 func proxyChannels(client, server *sshutils.Channel) {
 	var eof sync.Mutex
-	clientContext := channelContext{client, sync.WaitGroup{}, &eof}
-	serverContext := channelContext{server, sync.WaitGroup{}, &eof}
+	clientEOF := false
+	serverEOF := false
+	clientContext := channelContext{client, sync.WaitGroup{}, &eof, &clientEOF, &serverEOF}
+	serverContext := channelContext{server, sync.WaitGroup{}, &eof, &serverEOF, &clientEOF}
 
 	proxyChannelStdouts(&clientContext, &serverContext)
 
