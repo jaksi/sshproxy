@@ -174,79 +174,60 @@ func logEvent(source eventSource, e event) {
 
 type channelContext struct {
 	*sshutils.Channel
-	wg      sync.WaitGroup
-	eofLock *sync.Mutex
-	eof     bool
+	stdout, stderr sync.WaitGroup
+	eofLock        *sync.Mutex
+	eof            bool
 }
 
 func proxyChannelStdout(local, remote *channelContext, source eventSource) {
-	buffer := make([]byte, bufferSize)
-	for {
-		n, err := local.Read(buffer)
-		if err != nil {
-			if !errors.Is(err, io.EOF) {
-				panic(err)
-			}
-			local.eofLock.Lock()
-			local.eof = true
-			if !remote.eof {
-				if err := remote.CloseWrite(); err != nil {
+	local.stdout.Add(1)
+	go func() {
+		defer local.stdout.Done()
+		buffer := make([]byte, bufferSize)
+		for {
+			n, err := local.Read(buffer)
+			if err != nil {
+				if !errors.Is(err, io.EOF) {
 					panic(err)
 				}
-				logEvent(source, channelEOFEvent{Channel: local.ChannelID()})
+				local.eofLock.Lock()
+				local.eof = true
+				if !remote.eof {
+					local.stderr.Wait()
+					if err := remote.CloseWrite(); err != nil {
+						panic(err)
+					}
+					logEvent(source, channelEOFEvent{Channel: local.ChannelID()})
+				}
+				local.eofLock.Unlock()
+				break
 			}
-			local.eofLock.Unlock()
-			break
-		}
-		if _, err := remote.Write(buffer[:n]); err != nil {
-			panic(err)
-		}
-		logEvent(source, channelDataEvent{Channel: local.ChannelID(), Data: string(buffer[:n])})
-	}
-}
-
-func proxyChannelStdouts(client, server *channelContext) {
-	client.wg.Add(1)
-	go func() {
-		proxyChannelStdout(client, server, sClient)
-		client.wg.Done()
-	}()
-
-	server.wg.Add(1)
-	go func() {
-		proxyChannelStdout(server, client, sServer)
-		server.wg.Done()
-	}()
-}
-
-func proxyChannelStderr(local, remote *sshutils.Channel, source eventSource) {
-	buffer := make([]byte, bufferSize)
-	for {
-		n, err := local.Stderr().Read(buffer)
-		if err != nil {
-			if !errors.Is(err, io.EOF) {
+			if _, err := remote.Write(buffer[:n]); err != nil {
 				panic(err)
 			}
-			break
+			logEvent(source, channelDataEvent{Channel: local.ChannelID(), Data: string(buffer[:n])})
 		}
-		if _, err := remote.Stderr().Write(buffer[:n]); err != nil {
-			panic(err)
-		}
-		logEvent(source, channelErrorEvent{Channel: local.ChannelID(), Data: string(buffer[:n])})
-	}
+	}()
 }
 
-func proxyChannelStderrs(client, server *channelContext) {
-	client.wg.Add(1)
+func proxyChannelStderr(local, remote *channelContext, source eventSource) {
+	local.stderr.Add(1)
 	go func() {
-		proxyChannelStderr(client.Channel, server.Channel, sClient)
-		client.wg.Done()
-	}()
-
-	server.wg.Add(1)
-	go func() {
-		proxyChannelStderr(server.Channel, client.Channel, sServer)
-		server.wg.Done()
+		defer local.stderr.Done()
+		buffer := make([]byte, bufferSize)
+		for {
+			n, err := local.Stderr().Read(buffer)
+			if err != nil {
+				if !errors.Is(err, io.EOF) {
+					panic(err)
+				}
+				break
+			}
+			if _, err := remote.Stderr().Write(buffer[:n]); err != nil {
+				panic(err)
+			}
+			logEvent(source, channelErrorEvent{Channel: local.ChannelID(), Data: string(buffer[:n])})
+		}
 	}()
 }
 
@@ -269,19 +250,21 @@ func proxyChannelRequest(request *ssh.Request, remote *sshutils.Channel, source 
 
 func proxyChannels(client, server *sshutils.Channel) {
 	var eof sync.Mutex
-	clientContext := channelContext{client, sync.WaitGroup{}, &eof, false}
-	serverContext := channelContext{server, sync.WaitGroup{}, &eof, false}
+	clientContext := channelContext{client, sync.WaitGroup{}, sync.WaitGroup{}, &eof, false}
+	serverContext := channelContext{server, sync.WaitGroup{}, sync.WaitGroup{}, &eof, false}
 
-	proxyChannelStdouts(&clientContext, &serverContext)
+	proxyChannelStdout(&clientContext, &serverContext, sClient)
+	proxyChannelStdout(&serverContext, &clientContext, sServer)
 
-	proxyChannelStderrs(&clientContext, &serverContext)
+	proxyChannelStderr(&clientContext, &serverContext, sClient)
+	proxyChannelStderr(&serverContext, &clientContext, sServer)
 
 	for client.Requests != nil || server.Requests != nil {
 		select {
 		case request, ok := <-client.Requests:
 			if !ok {
 				if server.Requests != nil {
-					clientContext.wg.Wait()
+					clientContext.stdout.Wait()
 					if err := server.Close(); err != nil {
 						panic(err)
 					}
@@ -294,7 +277,7 @@ func proxyChannels(client, server *sshutils.Channel) {
 		case request, ok := <-server.Requests:
 			if !ok {
 				if client.Requests != nil {
-					serverContext.wg.Wait()
+					serverContext.stdout.Wait()
 					if err := client.Close(); err != nil {
 						panic(err)
 					}
