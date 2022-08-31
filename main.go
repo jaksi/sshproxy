@@ -179,61 +179,43 @@ type channelContext struct {
 	localEOF, remoteEOF *bool
 }
 
+func proxyChannelStdout(local, remote *channelContext, source eventSource) {
+	buffer := make([]byte, bufferSize)
+	for {
+		n, err := local.Read(buffer)
+		if err != nil {
+			if !errors.Is(err, io.EOF) {
+				panic(err)
+			}
+			local.eof.Lock()
+			*local.localEOF = true
+			if !*local.remoteEOF {
+				if err := remote.CloseWrite(); err != nil {
+					panic(err)
+				}
+				logEvent(source, channelEOFEvent{Channel: local.ChannelID()})
+			}
+			local.eof.Unlock()
+			break
+		}
+		if _, err := remote.Write(buffer[:n]); err != nil {
+			panic(err)
+		}
+		logEvent(source, channelDataEvent{Channel: local.ChannelID(), Data: string(buffer[:n])})
+	}
+}
+
 func proxyChannelStdouts(client, server *channelContext) {
 	client.wg.Add(1)
 	go func() {
-		defer client.wg.Done()
-		buffer := make([]byte, bufferSize)
-		for {
-			n, err := client.Read(buffer)
-			if err != nil {
-				if !errors.Is(err, io.EOF) {
-					panic(err)
-				}
-				client.eof.Lock()
-				*client.localEOF = true
-				if !*client.remoteEOF {
-					if err := server.CloseWrite(); err != nil {
-						panic(err)
-					}
-					logEvent(sClient, channelEOFEvent{Channel: client.ChannelID()})
-				}
-				client.eof.Unlock()
-				break
-			}
-			if _, err := server.Write(buffer[:n]); err != nil {
-				panic(err)
-			}
-			logEvent(sClient, channelDataEvent{Channel: client.ChannelID(), Data: string(buffer[:n])})
-		}
+		proxyChannelStdout(client, server, sClient)
+		client.wg.Done()
 	}()
 
 	server.wg.Add(1)
 	go func() {
-		defer server.wg.Done()
-		buffer := make([]byte, bufferSize)
-		for {
-			n, err := server.Read(buffer)
-			if err != nil {
-				if !errors.Is(err, io.EOF) {
-					panic(err)
-				}
-				client.eof.Lock()
-				*server.localEOF = true
-				if !*server.remoteEOF {
-					if err := client.CloseWrite(); err != nil {
-						panic(err)
-					}
-					logEvent(sServer, channelEOFEvent{Channel: server.ChannelID()})
-				}
-				client.eof.Unlock()
-				break
-			}
-			if _, err := client.Write(buffer[:n]); err != nil {
-				panic(err)
-			}
-			logEvent(sServer, channelDataEvent{Channel: server.ChannelID(), Data: string(buffer[:n])})
-		}
+		proxyChannelStdout(server, client, sServer)
+		server.wg.Done()
 	}()
 }
 
