@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"os"
 	"sync"
 
 	"github.com/jaksi/sshutils"
@@ -414,6 +415,7 @@ func main() {
 		panic("listen, hostkey, and connect are required")
 	}
 
+	log.SetOutput(os.Stdout)
 	if *jsonLogging {
 		log.SetFlags(0)
 	}
