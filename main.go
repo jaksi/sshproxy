@@ -161,7 +161,7 @@ func logEvent(source eventSource, e event) {
 	msg, err := json.Marshal(struct {
 		Type   string `json:"type"`
 		Source string `json:"source"`
-		Event  event  `json:"event,omitempty"`
+		Event  event  `json:"event"`
 	}{
 		Type:   e.eventType(),
 		Source: source.String(),
