@@ -437,7 +437,9 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-	listener.Close()
+	if err := listener.Close(); err != nil {
+		panic(err)
+	}
 
 	clientConfig := &ssh.ClientConfig{
 		User:            *user,
