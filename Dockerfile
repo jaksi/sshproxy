@@ -4,7 +4,7 @@ ADD . /go/src/sshproxy
 RUN go build -o /go/bin/sshproxy
 FROM debian
 COPY --from=build-env /go/bin/sshproxy /
-RUN apt update && apt install -y openssh-server openssl
+RUN apt update; apt install -y openssh-server openssl
 RUN useradd -m -s /bin/bash user -p "$(openssl passwd -1 hunter2)"
 RUN mkdir /run/sshd
 EXPOSE 2022
