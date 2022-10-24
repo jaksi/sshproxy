@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -8,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"os"
 	"sync"
 
@@ -403,9 +405,7 @@ func proxyConnections(client, server *sshutils.Conn) {
 func main() {
 	listenAddress := flag.String("listen", "", "address to listen on")
 	hostKeyFile := flag.String("hostkey", "", "host key file")
-	serverVersion := flag.String("server-version", "SSH-2.0-OpenSSH_9.0", "server version")
 	serverAddress := flag.String("connect", "", "address to connect to")
-	clientVersion := flag.String("client-version", "SSH-2.0-OpenSSH_9.0", "client version")
 	user := flag.String("user", "", "user to connect as")
 	password := flag.String("password", "", "password to connect with")
 	keyFile := flag.String("key", "", "key to connect with")
@@ -420,13 +420,27 @@ func main() {
 		log.SetFlags(0)
 	}
 
+	conn, err := net.Dial("tcp", *serverAddress)
+	if err != nil {
+		panic(err)
+	}
+	reader := bufio.NewReader(conn)
+	serverVersion, err := reader.ReadBytes('\r')
+	if err != nil {
+		panic(err)
+	}
+	serverVersion = serverVersion[:len(serverVersion)-1]
+	if err := conn.Close(); err != nil {
+		panic(err)
+	}
+
 	hostKey, err := sshutils.LoadHostKey(*hostKeyFile)
 	if err != nil {
 		panic(err)
 	}
 	serverConfig := &ssh.ServerConfig{
 		NoClientAuth:  true,
-		ServerVersion: *serverVersion,
+		ServerVersion: string(serverVersion),
 	}
 	serverConfig.AddHostKey(hostKey)
 	listener, err := sshutils.Listen(*listenAddress, serverConfig)
@@ -444,7 +458,7 @@ func main() {
 	clientConfig := &ssh.ClientConfig{
 		User:            *user,
 		HostKeyCallback: ssh.InsecureIgnoreHostKey(), //nolint: gosec
-		ClientVersion:   *clientVersion,
+		ClientVersion:   string(serverConn.ClientVersion()),
 	}
 	if *password != "" {
 		clientConfig.Auth = append(clientConfig.Auth, ssh.Password(*password))
