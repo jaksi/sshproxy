@@ -155,24 +155,24 @@ func (channelRequestEvent) eventType() string {
 	return "channel_request"
 }
 
+type entry struct {
+	Type   string `json:"type"`
+	Source string `json:"source"`
+	Event  event  `json:"event"`
+}
+
+var entries = []entry{}
+
 func logEvent(source eventSource, e event) {
 	if !*jsonLogging {
 		log.Printf("%v: %v", source, e)
-		return
+	} else {
+		entries = append(entries, entry{
+			Type:   e.eventType(),
+			Source: source.String(),
+			Event:  e,
+		})
 	}
-	msg, err := json.Marshal(struct {
-		Type   string `json:"type"`
-		Source string `json:"source"`
-		Event  event  `json:"event"`
-	}{
-		Type:   e.eventType(),
-		Source: source.String(),
-		Event:  e,
-	})
-	if err != nil {
-		panic(err)
-	}
-	log.Print(string(msg))
 }
 
 type channelContext struct {
@@ -476,4 +476,22 @@ func main() {
 	}
 
 	proxyConnections(serverConn, clientConn)
+
+	if *jsonLogging {
+		msg, err := json.MarshalIndent(struct {
+			Client  string  `json:"client"`
+			Server  string  `json:"server"`
+			User    string  `json:"user"`
+			Entries []entry `json:"entries"`
+		}{
+			Client:  string(clientConn.ClientVersion()),
+			Server:  string(serverConn.ServerVersion()),
+			User:    *user,
+			Entries: entries,
+		}, "", "  ")
+		if err != nil {
+			panic(err)
+		}
+		log.Print(string(msg))
+	}
 }
