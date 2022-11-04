@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -11,6 +12,7 @@ import (
 	"log"
 	"net"
 	"os"
+	"strings"
 	"sync"
 
 	"github.com/jaksi/sshutils"
@@ -294,10 +296,80 @@ func proxyChannels(client, server *sshutils.Channel) {
 	}
 }
 
-func proxyGlobalRequest(request *ssh.Request, remote *sshutils.Conn, source eventSource) {
-	accepted, response, err := remote.RawRequest(request.Type, request.WantReply, request.Payload)
+var (
+	hostKeys         []*sshutils.HostKey
+	serverPublicKeys sshutils.PublicKeys
+)
+
+func proxyGlobalRequest(
+	sessionID, remoteSessionID []byte, request *ssh.Request, remote *sshutils.Conn, source eventSource,
+) {
+	var payload sshutils.Payload
+	var response []byte
+	switch request.Type {
+	case "hostkeys-00@openssh.com":
+		requestPayload, err := sshutils.UnmarshalGlobalRequestPayload(request)
+		if err != nil {
+			panic(err)
+		}
+		hostkeysRequestPayload, ok := requestPayload.(*sshutils.HostkeysRequestPayload)
+		if !ok {
+			panic("unexpected request payload type")
+		}
+		serverPublicKeys = hostkeysRequestPayload.Hostkeys
+
+		publicKeys := make(sshutils.PublicKeys, len(hostKeys))
+		for i, hostKey := range hostKeys {
+			publicKeys[i] = hostKey.PublicKey()
+		}
+		payload = &sshutils.HostkeysRequestPayload{
+			Hostkeys: publicKeys,
+		}
+	case "hostkeys-prove-00@openssh.com":
+		requestPayload, err := sshutils.UnmarshalGlobalRequestPayload(request)
+		if err != nil {
+			panic(err)
+		}
+		hostkeysProveRequestPayload, ok := requestPayload.(*sshutils.HostkeysProveRequestPayload)
+		if !ok {
+			panic("invalid payload type")
+		}
+		responseHostKeys := make([]*sshutils.HostKey, len(hostkeysProveRequestPayload.Hostkeys))
+		for i, publicKey := range hostkeysProveRequestPayload.Hostkeys {
+			for _, hostKey := range hostKeys {
+				if bytes.Equal(hostKey.PublicKey().Marshal(), publicKey.Marshal()) {
+					responseHostKeys[i] = hostKey
+					break
+				}
+			}
+			if responseHostKeys[i] == nil {
+				panic("host key not found")
+			}
+		}
+		response, err = hostkeysProveRequestPayload.Response(responseHostKeys, sessionID)
+		if err != nil {
+			panic(err)
+		}
+
+		payload = &sshutils.HostkeysProveRequestPayload{
+			Hostkeys: serverPublicKeys,
+		}
+	}
+	requestPayload := request.Payload
+	if payload != nil {
+		requestPayload = payload.Marshal()
+	}
+	accepted, requestResponse, err := remote.RawRequest(request.Type, request.WantReply, requestPayload)
 	if err != nil {
 		panic(err)
+	}
+	if hostKeysProvePayload, ok := payload.(*sshutils.HostkeysProveRequestPayload); ok {
+		if err := hostKeysProvePayload.VerifyResponse(requestResponse, remoteSessionID); err != nil {
+			panic(err)
+		}
+	}
+	if response == nil {
+		response = requestResponse
 	}
 	if err := request.Reply(accepted, response); err != nil {
 		panic(err)
@@ -307,7 +379,7 @@ func proxyGlobalRequest(request *ssh.Request, remote *sshutils.Conn, source even
 		WantReply: request.WantReply,
 		Payload:   base64.StdEncoding.EncodeToString(request.Payload),
 		Accepted:  accepted,
-		Response:  base64.StdEncoding.EncodeToString(response),
+		Response:  base64.StdEncoding.EncodeToString(requestResponse),
 	})
 }
 
@@ -369,7 +441,7 @@ func proxyConnections(client, server *sshutils.Conn) {
 				client.Requests = nil
 				continue
 			}
-			proxyGlobalRequest(request, server, sClient)
+			proxyGlobalRequest(client.SessionID(), server.SessionID(), request, server, sClient)
 		case request, ok := <-server.Requests:
 			if !ok {
 				if client.Requests != nil {
@@ -381,11 +453,7 @@ func proxyConnections(client, server *sshutils.Conn) {
 				server.Requests = nil
 				continue
 			}
-			if request.Type == "hostkeys-00@openssh.com" {
-				// TODO: spoof that shit
-				continue
-			}
-			proxyGlobalRequest(request, client, sServer)
+			proxyGlobalRequest(server.SessionID(), client.SessionID(), request, client, sServer)
 		case newChannel, ok := <-client.NewChannels:
 			if !ok {
 				client.NewChannels = nil
@@ -404,14 +472,14 @@ func proxyConnections(client, server *sshutils.Conn) {
 
 func main() {
 	listenAddress := flag.String("listen", "", "address to listen on")
-	hostKeyFile := flag.String("hostkey", "", "host key file")
+	hostKeyFiles := flag.String("hostkeys", "", "host key files (comma-separated)")
 	serverAddress := flag.String("connect", "", "address to connect to")
 	user := flag.String("user", "", "user to connect as")
 	password := flag.String("password", "", "password to connect with")
 	keyFile := flag.String("key", "", "key to connect with")
 	flag.Parse()
 
-	if *listenAddress == "" || *hostKeyFile == "" || *serverAddress == "" {
+	if *listenAddress == "" || *hostKeyFiles == "" || *serverAddress == "" {
 		panic("listen, hostkey, and connect are required")
 	}
 
@@ -434,15 +502,21 @@ func main() {
 		panic(err)
 	}
 
-	hostKey, err := sshutils.LoadHostKey(*hostKeyFile)
-	if err != nil {
-		panic(err)
-	}
 	serverConfig := &ssh.ServerConfig{
 		NoClientAuth:  true,
 		ServerVersion: string(serverVersion),
 	}
-	serverConfig.AddHostKey(hostKey)
+
+	hostKeyFileNames := strings.Split(*hostKeyFiles, ",")
+	hostKeys = make([]*sshutils.HostKey, len(hostKeyFileNames))
+	for i, hostKeyFileName := range hostKeyFileNames {
+		hostKey, err := sshutils.LoadHostKey(hostKeyFileName)
+		if err != nil {
+			panic(err)
+		}
+		hostKeys[i] = hostKey
+		serverConfig.AddHostKey(hostKey)
+	}
 	listener, err := sshutils.Listen(*listenAddress, serverConfig)
 	if err != nil {
 		panic(err)
