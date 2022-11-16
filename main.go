@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -51,10 +52,12 @@ type globalRequestEvent struct {
 	Payload   string `json:"payload"`
 	Accepted  bool   `json:"accepted"`
 	Response  string `json:"response"`
+
+	payload sshutils.Payload
 }
 
 func (e globalRequestEvent) String() string {
-	return fmt.Sprintf("global request: %v, accepted: %v", e.Type, !e.WantReply || e.Accepted)
+	return fmt.Sprintf("global request: %s", e.payload)
 }
 
 func (globalRequestEvent) eventType() string {
@@ -78,13 +81,12 @@ type newChannelEvent struct {
 	ChannelID     string              `json:"channel_id"`
 	RejectReason  ssh.RejectionReason `json:"reject_reason"`
 	RejectMessage string              `json:"reject_message"`
+
+	payload sshutils.Payload
 }
 
 func (e newChannelEvent) String() string {
-	if e.Accepted {
-		return fmt.Sprintf("new channel: %v, ID: %v", e.Type, e.ChannelID)
-	}
-	return fmt.Sprintf("new channel: %v, rejected: %v", e.Type, e.RejectMessage)
+	return fmt.Sprintf("new channel %v: %s", e.ChannelID, e.payload)
 }
 
 func (newChannelEvent) eventType() string {
@@ -147,10 +149,12 @@ type channelRequestEvent struct {
 	WantReply bool   `json:"want_reply"`
 	Payload   string `json:"payload"`
 	Accepted  bool   `json:"accepted"`
+
+	payload sshutils.Payload
 }
 
 func (e channelRequestEvent) String() string {
-	return fmt.Sprintf("channel %v: request: %v, accepted: %v", e.Channel, e.Type, !e.WantReply || e.Accepted)
+	return fmt.Sprintf("channel %v: request: %s", e.Channel, e.payload)
 }
 
 func (channelRequestEvent) eventType() string {
@@ -236,8 +240,12 @@ func proxyChannelStderr(local, remote *channelContext, source eventSource) {
 	}()
 }
 
-func proxyChannelRequest(request *ssh.Request, remote *sshutils.Channel, source eventSource) {
-	accepted, err := remote.RawRequest(request.Type, request.WantReply, request.Payload)
+func proxyChannelRequest(request *sshutils.ChannelRequest, remote *sshutils.Channel, source eventSource) {
+	payload, err := request.UnmarshalPayload()
+	if err != nil {
+		panic(err)
+	}
+	accepted, err := remote.Request(request.Type, request.WantReply, payload)
 	if err != nil {
 		panic(err)
 	}
@@ -250,6 +258,8 @@ func proxyChannelRequest(request *ssh.Request, remote *sshutils.Channel, source 
 		WantReply: request.WantReply,
 		Payload:   string(request.Payload),
 		Accepted:  accepted,
+
+		payload: payload,
 	})
 }
 
@@ -301,41 +311,27 @@ var (
 	serverPublicKeys sshutils.PublicKeys
 )
 
-func proxyGlobalRequest(
-	sessionID, remoteSessionID []byte, request *ssh.Request, remote *sshutils.Conn, source eventSource,
-) {
-	var payload sshutils.Payload
+func proxyGlobalRequest(request *sshutils.GlobalRequest, local, remote *sshutils.Conn, source eventSource) {
+	payload, err := request.UnmarshalPayload()
+	if err != nil {
+		panic(err)
+	}
 	var response []byte
-	switch request.Type {
-	case "hostkeys-00@openssh.com":
-		requestPayload, err := sshutils.UnmarshalGlobalRequestPayload(request)
-		if err != nil {
-			panic(err)
-		}
-		hostkeysRequestPayload, ok := requestPayload.(*sshutils.HostkeysRequestPayload)
-		if !ok {
-			panic("unexpected request payload type")
-		}
-		serverPublicKeys = hostkeysRequestPayload.Hostkeys
+	requestPayload := payload
+	switch payload := payload.(type) {
+	case *sshutils.HostkeysRequestPayload:
+		serverPublicKeys = payload.Hostkeys
 
 		publicKeys := make(sshutils.PublicKeys, len(hostKeys))
 		for i, hostKey := range hostKeys {
 			publicKeys[i] = hostKey.PublicKey()
 		}
-		payload = &sshutils.HostkeysRequestPayload{
+		requestPayload = &sshutils.HostkeysRequestPayload{
 			Hostkeys: publicKeys,
 		}
-	case "hostkeys-prove-00@openssh.com":
-		requestPayload, err := sshutils.UnmarshalGlobalRequestPayload(request)
-		if err != nil {
-			panic(err)
-		}
-		hostkeysProveRequestPayload, ok := requestPayload.(*sshutils.HostkeysProveRequestPayload)
-		if !ok {
-			panic("invalid payload type")
-		}
-		responseHostKeys := make([]*sshutils.HostKey, len(hostkeysProveRequestPayload.Hostkeys))
-		for i, publicKey := range hostkeysProveRequestPayload.Hostkeys {
+	case *sshutils.HostkeysProveRequestPayload:
+		responseHostKeys := make([]*sshutils.HostKey, len(payload.Hostkeys))
+		for i, publicKey := range payload.Hostkeys {
 			for _, hostKey := range hostKeys {
 				if bytes.Equal(hostKey.PublicKey().Marshal(), publicKey.Marshal()) {
 					responseHostKeys[i] = hostKey
@@ -346,25 +342,21 @@ func proxyGlobalRequest(
 				panic("host key not found")
 			}
 		}
-		response, err = hostkeysProveRequestPayload.Response(responseHostKeys, sessionID)
+		response, err = payload.Response(rand.Reader, responseHostKeys, local.SessionID())
 		if err != nil {
 			panic(err)
 		}
 
-		payload = &sshutils.HostkeysProveRequestPayload{
+		requestPayload = &sshutils.HostkeysProveRequestPayload{
 			Hostkeys: serverPublicKeys,
 		}
 	}
-	requestPayload := request.Payload
-	if payload != nil {
-		requestPayload = payload.Marshal()
-	}
-	accepted, requestResponse, err := remote.RawRequest(request.Type, request.WantReply, requestPayload)
+	accepted, requestResponse, err := remote.Request(request.Type, request.WantReply, requestPayload)
 	if err != nil {
 		panic(err)
 	}
-	if hostKeysProvePayload, ok := payload.(*sshutils.HostkeysProveRequestPayload); ok {
-		if err := hostKeysProvePayload.VerifyResponse(requestResponse, remoteSessionID); err != nil {
+	if requestPayload, ok := requestPayload.(*sshutils.HostkeysProveRequestPayload); ok {
+		if err := requestPayload.VerifyResponse(requestResponse, remote.SessionID()); err != nil {
 			panic(err)
 		}
 	}
@@ -372,7 +364,10 @@ func proxyGlobalRequest(
 		response = requestResponse
 	}
 	if err := request.Reply(accepted, response); err != nil {
-		panic(err)
+		if err.Error() != "ssh: disconnect, reason 11: disconnected by user" {
+			// Remote sent a request and then disconnected before we could reply.
+			panic(err)
+		}
 	}
 	logEvent(source, globalRequestEvent{
 		Type:      request.Type,
@@ -380,11 +375,17 @@ func proxyGlobalRequest(
 		Payload:   base64.StdEncoding.EncodeToString(request.Payload),
 		Accepted:  accepted,
 		Response:  base64.StdEncoding.EncodeToString(requestResponse),
+
+		payload: payload,
 	})
 }
 
 func proxyNewChannel(newChannel *sshutils.NewChannel, remote *sshutils.Conn, source eventSource) {
-	remoteChannel, err := remote.RawChannel(newChannel.ChannelType(), newChannel.ExtraData())
+	payload, err := newChannel.UnmarshalPayload()
+	if err != nil {
+		panic(err)
+	}
+	remoteChannel, err := remote.Channel(newChannel.ChannelType(), payload)
 	accepted := true
 	var channelID string
 	var rejectReason ssh.RejectionReason
@@ -420,6 +421,8 @@ func proxyNewChannel(newChannel *sshutils.NewChannel, remote *sshutils.Conn, sou
 		ChannelID:     channelID,
 		RejectReason:  rejectReason,
 		RejectMessage: rejectMessage,
+
+		payload: payload,
 	})
 	if localChannel != nil {
 		go proxyChannels(localChannel, remoteChannel)
@@ -441,7 +444,7 @@ func proxyConnections(client, server *sshutils.Conn) {
 				client.Requests = nil
 				continue
 			}
-			proxyGlobalRequest(client.SessionID(), server.SessionID(), request, server, sClient)
+			proxyGlobalRequest(request, client, server, sClient)
 		case request, ok := <-server.Requests:
 			if !ok {
 				if client.Requests != nil {
@@ -453,7 +456,7 @@ func proxyConnections(client, server *sshutils.Conn) {
 				server.Requests = nil
 				continue
 			}
-			proxyGlobalRequest(server.SessionID(), client.SessionID(), request, client, sServer)
+			proxyGlobalRequest(request, server, client, sServer)
 		case newChannel, ok := <-client.NewChannels:
 			if !ok {
 				client.NewChannels = nil
