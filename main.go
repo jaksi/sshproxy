@@ -4,7 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"crypto/rand"
-	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -372,9 +372,9 @@ func proxyGlobalRequest(request *sshutils.GlobalRequest, local, remote *sshutils
 	logEvent(source, globalRequestEvent{
 		Type:      request.Type,
 		WantReply: request.WantReply,
-		Payload:   base64.StdEncoding.EncodeToString(request.Payload),
+		Payload:   hex.EncodeToString(request.Payload),
 		Accepted:  accepted,
-		Response:  base64.StdEncoding.EncodeToString(requestResponse),
+		Response:  hex.EncodeToString(requestResponse),
 
 		payload: payload,
 	})
@@ -416,7 +416,7 @@ func proxyNewChannel(newChannel *sshutils.NewChannel, remote *sshutils.Conn, sou
 	}
 	logEvent(source, newChannelEvent{
 		Type:          newChannel.ChannelType(),
-		Data:          base64.StdEncoding.EncodeToString(newChannel.ExtraData()),
+		Data:          hex.EncodeToString(newChannel.ExtraData()),
 		Accepted:      accepted,
 		ChannelID:     channelID,
 		RejectReason:  rejectReason,
