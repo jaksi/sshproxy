@@ -167,17 +167,61 @@ type entry struct {
 	Event  event  `json:"event"`
 }
 
-var entries = []entry{}
+var (
+	entries   = []entry{}
+	entriesMu sync.Mutex
+)
+
+func appendEntry(e entry) bool {
+	if len(entries) == 0 {
+		return false
+	}
+	last := entries[len(entries)-1]
+	if last.Source != e.Source {
+		return false
+	}
+	switch ev := e.Event.(type) {
+	case channelDataEvent:
+		lastEv, ok := last.Event.(channelDataEvent)
+		if !ok {
+			return false
+		}
+		if lastEv.Channel != ev.Channel {
+			return false
+		}
+		lastEv.Data += ev.Data
+		last.Event = lastEv
+	case channelErrorEvent:
+		lastEv, ok := last.Event.(channelErrorEvent)
+		if !ok {
+			return false
+		}
+		if lastEv.Channel != ev.Channel {
+			return false
+		}
+		lastEv.Data += ev.Data
+		last.Event = lastEv
+	default:
+		return false
+	}
+	entries[len(entries)-1] = last
+	return true
+}
 
 func logEvent(source eventSource, e event) {
 	if !*jsonLogging {
 		log.Printf("%v: %v", source, e)
 	} else {
-		entries = append(entries, entry{
+		entriesMu.Lock()
+		defer entriesMu.Unlock()
+		newEntry := entry{
 			Type:   e.eventType(),
 			Source: source.String(),
 			Event:  e,
-		})
+		}
+		if !appendEntry(newEntry) {
+			entries = append(entries, newEntry)
+		}
 	}
 }
 
