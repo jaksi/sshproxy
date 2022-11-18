@@ -599,6 +599,7 @@ func main() {
 	proxyConnections(serverConn, clientConn)
 
 	if *jsonLogging {
+		entriesMu.Lock()
 		msg, err := json.MarshalIndent(struct {
 			Client  string  `json:"client"`
 			Server  string  `json:"server"`
@@ -610,6 +611,7 @@ func main() {
 			User:    *user,
 			Entries: entries,
 		}, "", "  ")
+		entriesMu.Unlock()
 		if err != nil {
 			panic(err)
 		}
