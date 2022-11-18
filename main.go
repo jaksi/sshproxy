@@ -4,7 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"crypto/rand"
-	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -167,17 +167,61 @@ type entry struct {
 	Event  event  `json:"event"`
 }
 
-var entries = []entry{}
+var (
+	entries   = []entry{}
+	entriesMu sync.Mutex
+)
+
+func appendEntry(e entry) bool {
+	if len(entries) == 0 {
+		return false
+	}
+	last := entries[len(entries)-1]
+	if last.Source != e.Source {
+		return false
+	}
+	switch ev := e.Event.(type) {
+	case channelDataEvent:
+		lastEv, ok := last.Event.(channelDataEvent)
+		if !ok {
+			return false
+		}
+		if lastEv.Channel != ev.Channel {
+			return false
+		}
+		lastEv.Data += ev.Data
+		last.Event = lastEv
+	case channelErrorEvent:
+		lastEv, ok := last.Event.(channelErrorEvent)
+		if !ok {
+			return false
+		}
+		if lastEv.Channel != ev.Channel {
+			return false
+		}
+		lastEv.Data += ev.Data
+		last.Event = lastEv
+	default:
+		return false
+	}
+	entries[len(entries)-1] = last
+	return true
+}
 
 func logEvent(source eventSource, e event) {
 	if !*jsonLogging {
 		log.Printf("%v: %v", source, e)
 	} else {
-		entries = append(entries, entry{
+		entriesMu.Lock()
+		defer entriesMu.Unlock()
+		newEntry := entry{
 			Type:   e.eventType(),
 			Source: source.String(),
 			Event:  e,
-		})
+		}
+		if !appendEntry(newEntry) {
+			entries = append(entries, newEntry)
+		}
 	}
 }
 
@@ -372,9 +416,9 @@ func proxyGlobalRequest(request *sshutils.GlobalRequest, local, remote *sshutils
 	logEvent(source, globalRequestEvent{
 		Type:      request.Type,
 		WantReply: request.WantReply,
-		Payload:   base64.StdEncoding.EncodeToString(request.Payload),
+		Payload:   hex.EncodeToString(request.Payload),
 		Accepted:  accepted,
-		Response:  base64.StdEncoding.EncodeToString(requestResponse),
+		Response:  hex.EncodeToString(requestResponse),
 
 		payload: payload,
 	})
@@ -416,7 +460,7 @@ func proxyNewChannel(newChannel *sshutils.NewChannel, remote *sshutils.Conn, sou
 	}
 	logEvent(source, newChannelEvent{
 		Type:          newChannel.ChannelType(),
-		Data:          base64.StdEncoding.EncodeToString(newChannel.ExtraData()),
+		Data:          hex.EncodeToString(newChannel.ExtraData()),
 		Accepted:      accepted,
 		ChannelID:     channelID,
 		RejectReason:  rejectReason,
@@ -555,6 +599,7 @@ func main() {
 	proxyConnections(serverConn, clientConn)
 
 	if *jsonLogging {
+		entriesMu.Lock()
 		msg, err := json.MarshalIndent(struct {
 			Client  string  `json:"client"`
 			Server  string  `json:"server"`
@@ -566,6 +611,7 @@ func main() {
 			User:    *user,
 			Entries: entries,
 		}, "", "  ")
+		entriesMu.Unlock()
 		if err != nil {
 			panic(err)
 		}
