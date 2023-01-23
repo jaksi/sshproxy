@@ -3,7 +3,7 @@ module github.com/jaksi/sshproxy
 go 1.19
 
 require (
-	github.com/jaksi/sshutils v0.0.15
+	github.com/jaksi/sshutils v0.0.17
 	golang.org/x/crypto v0.5.0
 )
 
