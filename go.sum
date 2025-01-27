@@ -1,5 +1,5 @@
-github.com/jaksi/sshutils v0.0.18 h1:o4BAEbX7pgkWLyqpnsrpg87oHSC66p3LETf7JqbfW2I=
-github.com/jaksi/sshutils v0.0.18/go.mod h1:mtKEtBWoEBZdOBJfHe2TUN/tsFxBcfNCe88IbnT6/QE=
+github.com/jaksi/sshutils v0.0.19 h1:OVV+uDM6Iy/1x9JWvHE5yHoPA4FtA+y77QYDgfn1v9A=
+github.com/jaksi/sshutils v0.0.19/go.mod h1:rIc7oRpehhxnnGc8H5LR4V/BPbii4jOI5DpAeuusWmg=
 golang.org/x/crypto v0.32.0 h1:euUpcYgM8WcP71gNpTqQCn6rC2t6ULUPiOzfWaXVVfc=
 golang.org/x/crypto v0.32.0/go.mod h1:ZnnJkOaASj8g0AjIduWNlq2NRxL0PlBrbKVyZ6V/Ugc=
 golang.org/x/sys v0.29.0 h1:TPYlXGxvx1MGTn2GiZDhnjPA9wZzZeGKHHmKhHYvgaU=
